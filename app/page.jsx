@@ -165,16 +165,8 @@ export default function Home() {
             <h1>Kompresi Citra Digital</h1>
             <p className="subtitle">Analisis kuantisasi, RLE, Huffman, dekompresi, dan evaluasi kualitas citra dalam satu alur kerja.</p>
           </div>
-          <div className="hero-side">
-            <div className="signal-card" aria-hidden="true">
-              <span>RAW</span>
-              <span>GRAY</span>
-              <span>RLE</span>
-              <span>HUF</span>
-            </div>
-            <div className="status">
-              {isProcessing ? "Memproses..." : result ? "Evaluasi siap" : "Siap"}
-            </div>
+          <div className="status">
+            {isProcessing ? "Memproses..." : result ? "Evaluasi siap" : "Siap"}
           </div>
         </header>
 
