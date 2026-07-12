@@ -1,0 +1,13 @@
+node_modules/
+.next/
+.codex_tmp/
+.vercel/
+tools/
+AGENTS.md
+PRD.md
+TASK.md
+progress.txt
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*

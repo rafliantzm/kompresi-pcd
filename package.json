@@ -1,0 +1,21 @@
+{
+  "name": "project-akhir-update",
+  "version": "1.0.0",
+  "description": "Aplikasi kompresi citra digital dengan kuantisasi, RLE, Huffman, evaluasi, dan detail rumus.",
+  "main": "next.config.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "next": "^16.2.10",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "utif": "^3.1.0"
+  }
+}
