@@ -9,8 +9,8 @@
     "build": "next build",
     "start": "next start",
     "test": "node --test",
-    "lint": "node --check lib/compression-core.js && node --check test/compression.test.js",
-    "typecheck": "node --check lib/compression-core.js && node --check test/compression.test.js"
+    "lint": "node --check lib/compression-core.js && node --check test/compression.test.js && node --check test/ui-static.test.js",
+    "typecheck": "node --check lib/compression-core.js && node --check test/compression.test.js && node --check test/ui-static.test.js"
   },
   "keywords": [],
   "author": "",
