@@ -44,7 +44,31 @@ test("UI responsive tidak memakai grid hasil yang terlalu padat", () => {
 
 test("Pohon Huffman besar dan mempunyai kontrol navigasi", () => {
   assert.match(css, /tree-wrap[\s\S]*min-height:\s*600px/);
-  for (const label of ["Zoom In", "Zoom Out", "Geser Kiri", "Geser Kanan", "Geser Atas", "Geser Bawah", "Fit to Screen", "Reset"]) {
+  for (const label of ["Zoom In", "Zoom Out", "Geser Kiri", "Geser Kanan", "Geser Atas", "Geser Bawah", "Fit to Screen", "Reset", "Export SVG", "Export PNG"]) {
     assert.match(page, new RegExp(label));
   }
+  assert.match(page, /Simplified Tree \/ Top Symbols View/);
+});
+
+test("Pipeline comparison mode tidak ambigu", () => {
+  assert.match(page, /Kuantisasi \+ Perbandingan RLE dan Huffman/);
+  assert.doesNotMatch(page, /Kuantisasi \+ RLE \+ Huffman/);
+  assert.match(page, /RLE dan Huffman dibandingkan sebagai dua metode setelah kuantisasi/);
+});
+
+test("Dataset recap dan multi-level testing tersedia", () => {
+  for (const format of ["JPG/JPEG", "PNG", "BMP", "TIFF"]) {
+    assert.match(page, new RegExp(format.replace("/", "\\/")));
+  }
+  assert.match(page, /Run Multi-Level Test/);
+  assert.match(page, /MULTI_LEVEL_COLUMNS/);
+  assert.match(page, /Unduh CSV Multi-Level/);
+  assert.match(page, /Minimum rekomendasi 5 citra per format/);
+});
+
+test("Wide table memiliki compact view dan kolom sticky penting", () => {
+  assert.match(page, /analysisTableView/);
+  assert.match(page, /\["Ringkas", "Detail"\]/);
+  assert.match(css, /multi-table th:nth-child\(2\)/);
+  assert.match(css, /position:\s*sticky/);
 });

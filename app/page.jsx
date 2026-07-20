@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   arraysEqual,
   checksum as dataChecksum,
@@ -15,12 +15,31 @@ import {
 } from "../lib/compression-core.js";
 
 const LEVELS = [256, 128, 64, 32, 16, 8];
-const METHODS = ["RLE", "Huffman", "Kuantisasi + RLE", "Kuantisasi + Huffman", "Kuantisasi + RLE + Huffman"];
+const METHODS = ["RLE", "Huffman", "Kuantisasi + RLE", "Kuantisasi + Huffman", "Kuantisasi + Perbandingan RLE dan Huffman"];
 const OUTPUT_MODES = ["1. Alur Lengkap", "2. Per Citra/Tahap"];
 const MAX_PIXELS = 1200000;
 const WORKFLOW_STEPS = ["Input Citra", "Grayscale", "Kuantisasi", "RLE", "Huffman", "Dekompresi", "Evaluasi"];
 const RLE_PAGE_SIZE = 60;
 const TABLE_PAGE_SIZE = 40;
+const DATASET_FORMATS = ["JPG/JPEG", "PNG", "BMP", "TIFF"];
+const MULTI_LEVEL_COLUMNS = [
+  "No",
+  "Image Name",
+  "Format",
+  "Quantization Level",
+  "Original Size",
+  "Quantized Size",
+  "RLE Size",
+  "Huffman Size",
+  "Best Method",
+  "Compression Ratio",
+  "Space Saving",
+  "MSE",
+  "PSNR",
+  "Compression Time",
+  "Decompression Time",
+  "Status",
+];
 
 const TERM_HELP = {
   histogram: "Histogram menunjukkan jumlah piksel pada setiap nilai intensitas grayscale.",
@@ -66,15 +85,20 @@ export default function Home() {
   const [fileInputKey, setFileInputKey] = useState(0);
   const [fileInfo, setFileInfo] = useState(null);
   const [decoded, setDecoded] = useState(null);
+  const [datasetItems, setDatasetItems] = useState([]);
   const [sourceProfile, setSourceProfile] = useState(null);
   const [level, setLevel] = useState(64);
-  const [method, setMethod] = useState("Kuantisasi + RLE + Huffman");
+  const [method, setMethod] = useState("Kuantisasi + Perbandingan RLE dan Huffman");
   const [outputMode, setOutputMode] = useState("1. Alur Lengkap");
   const [showDetailAfterEval, setShowDetailAfterEval] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
   const [result, setResult] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isMultiTesting, setIsMultiTesting] = useState(false);
   const [processingStage, setProcessingStage] = useState("");
+  const [multiProgress, setMultiProgress] = useState("");
+  const [multiLevelRows, setMultiLevelRows] = useState([]);
+  const [analysisTableView, setAnalysisTableView] = useState("Ringkas");
   const [error, setError] = useState("");
   const [rlePage, setRlePage] = useState(0);
 
@@ -105,30 +129,62 @@ export default function Home() {
   }
 
   async function onPickFile(event) {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files ?? []);
     setError("");
     setResult(null);
     setSourceProfile(null);
+    setDatasetItems([]);
+    setMultiLevelRows([]);
     setShowDetail(false);
-    if (!file) return;
+    if (!files.length) return;
 
     try {
       setIsProcessing(true);
-      setProcessingStage("Membaca citra");
-      const image = await decodeImageFile(file);
-      setProcessingStage("Menganalisis level sumber");
-      const grayPreview = toGrayscale(image.rgba, image.width, image.height);
-      const profile = analyzeSourceQuantization(grayPreview);
-      const nextValidLevel = highestValidTargetLevel(profile.estimatedLevel);
-      setDecoded(image);
-      setSourceProfile(profile);
-      setLevel((current) => current < profile.estimatedLevel ? current : nextValidLevel);
-      setFileInfo({
-        name: file.name,
-        type: file.type || extensionOf(file.name).toUpperCase(),
-        size: file.size,
-        format: extensionOf(file.name).toUpperCase(),
-      });
+      const items = [];
+      for (const [index, file] of files.entries()) {
+        setProcessingStage(`Membaca citra ${index + 1}/${files.length}`);
+        try {
+          const image = await decodeImageFile(file);
+          setProcessingStage(`Menganalisis level sumber ${index + 1}/${files.length}`);
+          const grayPreview = toGrayscale(image.rgba, image.width, image.height);
+          const profile = analyzeSourceQuantization(grayPreview);
+          items.push({
+            id: `${file.name}-${file.size}-${index}`,
+            fileInfo: {
+              name: file.name,
+              type: file.type || extensionOf(file.name).toUpperCase(),
+              size: file.size,
+              format: extensionOf(file.name).toUpperCase(),
+            },
+            decoded: image,
+            sourceProfile: profile,
+            error: "",
+          });
+        } catch (err) {
+          items.push({
+            id: `${file.name}-${file.size}-${index}`,
+            fileInfo: {
+              name: file.name,
+              type: file.type || extensionOf(file.name).toUpperCase(),
+              size: file.size,
+              format: extensionOf(file.name).toUpperCase(),
+            },
+            decoded: null,
+            sourceProfile: null,
+            error: err instanceof Error ? err.message : "Format tidak dapat dibaca browser.",
+          });
+        }
+        await yieldToBrowser();
+      }
+
+      setDatasetItems(items);
+      const firstValid = items.find((item) => item.decoded);
+      if (!firstValid) throw new Error("Tidak ada citra yang berhasil dibaca. Coba gunakan JPG, PNG, BMP, atau TIFF yang valid.");
+      const nextValidLevel = highestValidTargetLevel(firstValid.sourceProfile.estimatedLevel);
+      setDecoded(firstValid.decoded);
+      setSourceProfile(firstValid.sourceProfile);
+      setLevel((current) => current < firstValid.sourceProfile.estimatedLevel ? current : nextValidLevel);
+      setFileInfo(firstValid.fileInfo);
     } catch (err) {
       setError(`Tahap upload gagal: ${err instanceof Error ? err.message : "Citra gagal dibaca."}`);
       setDecoded(null);
@@ -178,19 +234,72 @@ export default function Home() {
     downloadText(detailLines.join("\n"), `${withoutExtension(result.file.name)}_detail_perhitungan.txt`, "text/plain;charset=utf-8");
   }
 
+  async function runMultiLevelTest() {
+    const validItems = datasetItems.filter((item) => item.decoded);
+    if (!validItems.length) {
+      setError("Upload minimal satu citra yang berhasil dibaca sebelum menjalankan multi-level test.");
+      return;
+    }
+
+    setError("");
+    setIsMultiTesting(true);
+    setMultiLevelRows([]);
+    const rows = [];
+    let no = 1;
+    try {
+      for (const [imageIndex, item] of validItems.entries()) {
+        for (const levelValue of LEVELS) {
+          setMultiProgress(`${imageIndex + 1}/${validItems.length} citra, level ${levelValue}`);
+          await yieldToBrowser();
+          if (levelValue >= item.sourceProfile.estimatedLevel) {
+            rows.push(buildInvalidMultiLevelRow(no++, item, levelValue));
+            continue;
+          }
+          const testResult = runPipeline(
+            item.decoded,
+            item.fileInfo,
+            levelValue,
+            "Kuantisasi + Perbandingan RLE dan Huffman",
+            "1. Alur Lengkap",
+            item.sourceProfile,
+          );
+          rows.push(buildMultiLevelRow(no++, item, levelValue, testResult));
+          setMultiLevelRows([...rows]);
+        }
+      }
+      setMultiLevelRows(rows);
+    } catch (err) {
+      setError(`Tahap multi-level test gagal: ${err instanceof Error ? err.message : "Pengujian tidak dapat diselesaikan."}`);
+    } finally {
+      setIsMultiTesting(false);
+      setMultiProgress("");
+    }
+  }
+
+  function downloadMultiLevelCsv() {
+    if (!multiLevelRows.length) return;
+    const csv = toCsv([MULTI_LEVEL_COLUMNS, ...multiLevelRows.map((row) => MULTI_LEVEL_COLUMNS.map((column) => row[column] ?? "-"))]);
+    downloadText(csv, "multi_level_quantization_test.csv", "text/csv;charset=utf-8");
+  }
+
   function resetApp() {
     setFileInputKey((value) => value + 1);
     setFileInfo(null);
     setDecoded(null);
+    setDatasetItems([]);
     setSourceProfile(null);
     setLevel(64);
-    setMethod("Kuantisasi + RLE + Huffman");
+    setMethod("Kuantisasi + Perbandingan RLE dan Huffman");
     setOutputMode("1. Alur Lengkap");
     setShowDetailAfterEval(false);
     setShowDetail(false);
     setResult(null);
     setIsProcessing(false);
     setProcessingStage("");
+    setMultiProgress("");
+    setMultiLevelRows([]);
+    setIsMultiTesting(false);
+    setAnalysisTableView("Ringkas");
     setError("");
     setRlePage(0);
   }
@@ -249,8 +358,8 @@ export default function Home() {
 
           <label className="field file-field">
             <span>Input Citra</span>
-            <input key={fileInputKey} type="file" accept=".jpg,.jpeg,.png,.bmp,.tif,.tiff,image/*" onChange={onPickFile} />
-            <small className="help">Format: JPG, PNG, BMP, TIFF. Citra besar diproses pada ukuran kerja agar aplikasi tetap responsif.</small>
+            <input key={fileInputKey} type="file" accept=".jpg,.jpeg,.png,.bmp,.tif,.tiff,image/*" multiple onChange={onPickFile} />
+            <small className="help">Format: JPG/JPEG, PNG, BMP, TIFF. Bisa pilih banyak citra; file pertama yang valid dipakai untuk flow utama.</small>
           </label>
 
           <label className="field">
@@ -317,11 +426,23 @@ export default function Home() {
             <button type="button" className="secondary" onClick={() => setShowDetail(true)} disabled={!result}>Dekompresi Huffman</button>
             <button type="button" className="secondary" onClick={downloadHuffmanData} disabled={!result}>Unduh Data Huffman</button>
             <button type="button" className="secondary" onClick={downloadHuffmanReconstruction} disabled={!result}>Unduh Citra Huffman</button>
+            <button type="button" className="secondary" onClick={runMultiLevelTest} disabled={!datasetItems.some((item) => item.decoded) || isProcessing || isMultiTesting}>
+              {isMultiTesting ? "Menjalankan Multi-Level..." : "Run Multi-Level Test"}
+            </button>
+            <button type="button" className="secondary" onClick={downloadMultiLevelCsv} disabled={!multiLevelRows.length}>Unduh CSV Multi-Level</button>
             <button type="button" className="secondary" onClick={downloadCsv} disabled={!result}>Unduh CSV</button>
             <button type="button" className="secondary" onClick={downloadDetail} disabled={!result}>Unduh Detail</button>
             <button type="button" className="secondary reset" onClick={resetApp}>Reset</button>
           </div>
         </section>
+
+        <PipelineExplanation />
+
+        <DatasetRecap items={datasetItems} />
+
+        {(multiLevelRows.length > 0 || isMultiTesting) && (
+          <MultiLevelResults rows={multiLevelRows} progress={multiProgress} isRunning={isMultiTesting} onDownload={downloadMultiLevelCsv} />
+        )}
 
         {error && <div className="alert">{error}</div>}
 
@@ -405,17 +526,27 @@ export default function Home() {
             </div>
             <span>{result.rows.length} baris, klik untuk membuka tabel lengkap</span>
           </summary>
+          <div className="table-toolbar">
+            <div className="tabs small" role="tablist" aria-label="Mode tampilan tabel analisis">
+              {["Ringkas", "Detail"].map((view) => (
+                <button key={view} type="button" className={analysisTableView === view ? "tab-button active" : "tab-button"} onClick={() => setAnalysisTableView(view)}>
+                  {view} View
+                </button>
+              ))}
+            </div>
+            <p className="table-hint">Geser tabel ke kanan untuk melihat kolom lengkap. Kolom penting tetap berada di sisi kiri.</p>
+          </div>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
-                  {TABLE_COLUMNS.map((column) => <th key={column}>{column}</th>)}
+                  {columnsForAnalysisView(analysisTableView).map((column) => <th key={column}>{column}</th>)}
                 </tr>
               </thead>
               <tbody>
                 {result.rows.map((row) => (
                     <tr key={row.No}>
-                      {TABLE_COLUMNS.map((column) => <td key={column}>{row[column]}</td>)}
+                      {columnsForAnalysisView(analysisTableView).map((column) => <td key={column}>{row[column]}</td>)}
                     </tr>
                 ))}
               </tbody>
@@ -438,6 +569,120 @@ export default function Home() {
 
       </section>
     </main>
+  );
+}
+
+function PipelineExplanation() {
+  return (
+    <section className="pipeline-panel" aria-label="Penjelasan pipeline kompresi">
+      <div>
+        <p className="eyebrow">Penjelasan Pipeline</p>
+        <h2>Cara Membaca Pipeline</h2>
+      </div>
+      <div className="pipeline-grid">
+        <p><strong>Kuantisasi</strong> mengurangi level grayscale dan dapat menimbulkan loss karena beberapa intensitas diganti oleh nilai representatif.</p>
+        <p><strong>RLE</strong> mengevaluasi kode kuantisasi sebagai pasangan (p,q). Metode ini kuat pada citra sederhana, tetapi bisa membesar pada citra tekstur karena jumlah run tinggi.</p>
+        <p><strong>Huffman</strong> juga mengevaluasi kode kuantisasi secara langsung. Simbol yang sering muncul mendapat kode lebih pendek berdasarkan distribusi frekuensi.</p>
+        <p><strong>Mode perbandingan</strong> berarti RLE dan Huffman dibandingkan sebagai dua metode setelah kuantisasi, bukan Huffman diterapkan setelah RLE.</p>
+      </div>
+    </section>
+  );
+}
+
+function DatasetRecap({ items }) {
+  const recap = buildDatasetRecap(items);
+  return (
+    <section className="dataset-section" aria-label="Rekap dataset multi format">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Dataset Recap</p>
+          <h2>Rekap Format Citra</h2>
+        </div>
+        <span>Minimum rekomendasi 5 citra per format</span>
+      </div>
+      <div className="format-progress">
+        {recap.map((row) => (
+          <article key={row.format} className={`format-card ${row.statusClass}`}>
+            <span>{row.format}</span>
+            <strong>{row.count}/5</strong>
+            <small>{row.status}</small>
+          </article>
+        ))}
+      </div>
+      <div className="mini-table-wrap">
+        <table className="mini-table">
+          <thead>
+            <tr>
+              <th>Format</th>
+              <th>Jumlah Citra</th>
+              <th>Nama File</th>
+              <th>Dimensi</th>
+              <th>Ukuran File Asli</th>
+              <th>Status</th>
+              <th>Catatan</th>
+            </tr>
+          </thead>
+          <tbody>
+            {recap.map((row) => (
+              <tr key={row.format}>
+                <td>{row.format}</td>
+                <td>{row.count}</td>
+                <td>{row.names || "-"}</td>
+                <td>{row.dimensions || "-"}</td>
+                <td>{row.sizes || "-"}</td>
+                <td>{row.status}</td>
+                <td>{row.notes || "Belum ada citra pada format ini."}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function MultiLevelResults({ rows, progress, isRunning, onDownload }) {
+  const [query, setQuery] = useState("");
+  const [page, setPage] = useState(0);
+  const filtered = filterRows(rows, query, ["Image Name", "Format", "Quantization Level", "Best Method", "Status"]);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / TABLE_PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+  const visibleRows = filtered.slice(safePage * TABLE_PAGE_SIZE, safePage * TABLE_PAGE_SIZE + TABLE_PAGE_SIZE);
+  return (
+    <section className="table-section">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Multi-Level Quantization Test</p>
+          <h2>Pengujian Level 256, 128, 64, 32, 16, dan 8</h2>
+        </div>
+        <span>{isRunning ? progress || "Memproses..." : `${rows.length} baris`}</span>
+      </div>
+      <div className="table-toolbar">
+        <SearchBox value={query} onChange={(value) => { setQuery(value); setPage(0); }} placeholder="Cari nama citra, format, level, metode terbaik, atau status" />
+        <button type="button" className="secondary" onClick={onDownload} disabled={!rows.length}>Unduh CSV Multi-Level</button>
+      </div>
+      <TablePager page={safePage} pageCount={pageCount} onPrev={() => setPage(Math.max(0, safePage - 1))} onNext={() => setPage(Math.min(pageCount - 1, safePage + 1))} total={filtered.length} />
+      <div className="table-wrap wide-affordance">
+        <table className="multi-table">
+          <thead>
+            <tr>
+              {MULTI_LEVEL_COLUMNS.map((column) => <th key={column}>{column}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {visibleRows.length ? visibleRows.map((row) => (
+              <tr key={`${row.No}-${row["Image Name"]}-${row["Quantization Level"]}`}>
+                {MULTI_LEVEL_COLUMNS.map((column) => <td key={column}>{row[column]}</td>)}
+              </tr>
+            )) : (
+              <tr>
+                <td colSpan={MULTI_LEVEL_COLUMNS.length} className="empty">Belum ada hasil yang cocok dengan pencarian.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -617,7 +862,12 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
           </>
         )}
         {huffmanTab === "Tahap Penggabungan" && <HuffmanMergeTable rows={huffmanMergeRows} />}
-        {huffmanTab === "Pohon Huffman" && <HuffmanTreeSvg root={result.huffman.root} />}
+        {huffmanTab === "Pohon Huffman" && (
+          <>
+            <HuffmanTreeSvg root={result.huffman.root} entries={result.huffman.codeEntries} fileName={withoutExtension(result.file.name)} />
+            <HuffmanCodeAside rows={result.huffman.codeEntries.filter((entry) => entry.frequency > 0).slice(0, 16)} />
+          </>
+        )}
         {huffmanTab === "Kode Biner" && <HuffmanTable rows={filteredHuffmanEntries} mode="code" />}
         {huffmanTab === "Bitstream" && (
           <div className="bitstream-panel">
@@ -709,6 +959,7 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         <Tabs tabs={["Mode Teoritis Materi", "Ukuran Penyimpanan Aktual"]} active={evaluationTab} onChange={setEvaluationTab} />
         {evaluationTab === "Mode Teoritis Materi" ? <TheoreticalEvaluation result={result} /> : <ActualEvaluation result={result} />}
         <Meaning>MSE mengukur rata-rata kesalahan piksel. Nilai lebih kecil lebih baik. PSNR mengukur kemiripan kualitas; nilai lebih besar lebih baik.</Meaning>
+        <PerMethodConclusions result={result} />
         <div className="conclusion-box">
           <h3>Kesimpulan Otomatis</h3>
           <p>{buildAutoConclusion(result, evaluationTab)}</p>
@@ -943,6 +1194,21 @@ function HuffmanMergeTable({ rows }) {
   );
 }
 
+function HuffmanCodeAside({ rows }) {
+  return (
+    <article className="analysis-card full-width">
+      <div className="section-heading compact">
+        <div>
+          <p className="eyebrow">Codebook Ringkas</p>
+          <h2>Kode Biner Simbol Teratas</h2>
+        </div>
+        <span>{rows.length} simbol teratas</span>
+      </div>
+      <HuffmanTable rows={rows} mode="tree-aside" />
+    </article>
+  );
+}
+
 function DecompressionCard({ title, src, checksum, identical, difference, decodeMs, width, height, pixels, onDownload }) {
   return (
     <article className="decompression-card">
@@ -956,6 +1222,20 @@ function DecompressionCard({ title, src, checksum, identical, difference, decode
       ]} />
       <button type="button" className="secondary" onClick={onDownload}>Unduh PNG</button>
     </article>
+  );
+}
+
+function PerMethodConclusions({ result }) {
+  const items = buildMethodConclusions(result);
+  return (
+    <div className="method-conclusion-grid">
+      {items.map((item) => (
+        <article key={item.title} className="conclusion-box">
+          <h3>{item.title}</h3>
+          <p>{item.body}</p>
+        </article>
+      ))}
+    </div>
   );
 }
 
@@ -1072,6 +1352,139 @@ function buildAutoConclusion(result, mode) {
   return "Kedua metode valid secara round-trip. Efisiensi utama tetap bergantung pada pola citra: RLE terbantu oleh run panjang, sedangkan Huffman terbantu oleh distribusi simbol yang tidak merata.";
 }
 
+function buildMethodConclusions(result) {
+  const quantLower = result.quantization.levelCount < result.sourceProfile.estimatedLevel;
+  const rleLargerThanQuant = result.rle.theoreticalBits > result.quantization.theoreticalBits;
+  const huffmanLowSaving = result.huffman.metrics.ss < 5;
+  const best = result.rle.metrics.cr >= result.huffman.metrics.cr ? "RLE" : "Huffman";
+  const qualityText = result.reconstructionMetrics.mse === 0
+    ? "Kualitas rekonstruksi identik pada ukuran grayscale yang diuji karena MSE bernilai 0 dan PSNR Infinity."
+    : `Kualitas rekonstruksi dipengaruhi kuantisasi dengan MSE ${fixed(result.reconstructionMetrics.mse)} dan PSNR ${psnr(result.reconstructionMetrics.psnr)} dB.`;
+  return [
+    {
+      title: "Kuantisasi",
+      body: quantLower
+        ? `Kuantisasi menurunkan bit depth dari ${result.sourceProfile.bitsPerPixel} bit/piksel menjadi ${result.quantization.quantizedBitDepth} bit/piksel. Ukuran teoritis turun dari ${bits(result.quantInputBits)} menjadi ${bits(result.quantization.theoreticalBits)}; semakin rendah level, kompresi biasanya meningkat tetapi risiko penurunan kualitas ikut naik. ${qualityText}`
+        : "Level kuantisasi tidak menurunkan level sumber, sehingga tidak direkomendasikan sebagai proses kuantisasi akademik.",
+    },
+    {
+      title: "RLE",
+      body: rleLargerThanQuant
+        ? `RLE menghasilkan ${result.rle.pairCount} run dan ukuran ${bits(result.rle.theoreticalBits)}, lebih besar daripada ukuran kuantisasi ${bits(result.quantization.theoreticalBits)}. Ini menunjukkan citra memiliki terlalu banyak run pendek, sehingga pasangan (p,q) menambah biaya penyimpanan.`
+        : `RLE efektif pada citra ini karena ukuran turun menjadi ${bits(result.rle.theoreticalBits)} dengan compression ratio ${fixed(result.rle.metrics.cr)}. Rata-rata panjang run adalah ${fixed(result.rle.averageRunLength)} piksel/run.`,
+    },
+    {
+      title: "Huffman",
+      body: huffmanLowSaving
+        ? `Huffman hanya memberi space saving ${fixed(result.huffman.metrics.ss)}%. Hal ini mengindikasikan distribusi simbol relatif merata atau panjang kode rata-rata ${fixed(result.huffman.averageLength, 4)} mendekati fixed-length representation.`
+        : `Huffman efektif karena memanfaatkan distribusi frekuensi simbol. Payload menjadi ${bits(result.huffman.payloadBits)} dengan entropy ${fixed(result.huffman.entropy, 4)} dan panjang kode rata-rata ${fixed(result.huffman.averageLength, 4)} bit/simbol.`,
+    },
+    {
+      title: "Metode Terbaik",
+      body: `Berdasarkan compression ratio dan space saving teoritis, metode terbaik untuk citra ini adalah ${best}. Untuk citra sederhana/logo/kartun, RLE dapat direkomendasikan; untuk citra natural, kompleks, atau bertekstur, kuantisasi dan Huffman biasanya lebih stabil. Untuk kebutuhan kualitas tinggi, gunakan level lebih besar seperti 128 atau 256 selama tetap valid terhadap level sumber.`,
+    },
+  ];
+}
+
+function buildDatasetRecap(items) {
+  return DATASET_FORMATS.map((format) => {
+    const groupItems = items.filter((item) => datasetFormatKey(item.fileInfo.format) === format);
+    const notes = groupItems.map((item) => {
+      if (item.error) return `${item.fileInfo.name}: ${item.error}`;
+      if (item.decoded?.wasResized) return `${item.fileInfo.name}: diproses pada ukuran kerja agar browser tetap responsif`;
+      return `${item.fileInfo.name}: terbaca`;
+    }).join("; ");
+    return {
+      format,
+      count: groupItems.length,
+      names: groupItems.map((item) => item.fileInfo.name).join(", "),
+      dimensions: groupItems.map((item) => item.decoded ? `${item.decoded.originalWidth} x ${item.decoded.originalHeight}` : "-").join(", "),
+      sizes: groupItems.map((item) => fileSize(item.fileInfo.size)).join(", "),
+      status: groupItems.length >= 5 ? "Sesuai" : groupItems.length > 0 ? "Kurang" : "Belum Ada",
+      statusClass: groupItems.length >= 5 ? "ok" : groupItems.length > 0 ? "warn" : "empty",
+      notes,
+    };
+  });
+}
+
+function buildInvalidMultiLevelRow(no, item, levelValue) {
+  return {
+    No: no,
+    "Image Name": item.fileInfo.name,
+    Format: datasetFormatKey(item.fileInfo.format),
+    "Quantization Level": levelValue,
+    "Original Size": "-",
+    "Quantized Size": "-",
+    "RLE Size": "-",
+    "Huffman Size": "-",
+    "Best Method": "-",
+    "Compression Ratio": "-",
+    "Space Saving": "-",
+    MSE: "-",
+    PSNR: "-",
+    "Compression Time": "-",
+    "Decompression Time": "-",
+    Status: `Tidak valid: level ${levelValue} tidak lebih kecil dari level sumber ${item.sourceProfile.estimatedLevel}`,
+  };
+}
+
+function buildMultiLevelRow(no, item, levelValue, result) {
+  const bestMethod = result.rle.metrics.cr >= result.huffman.metrics.cr ? "RLE" : "Huffman";
+  const bestMetrics = bestMethod === "RLE" ? result.rle.metrics : result.huffman.metrics;
+  const bestMse = bestMethod === "RLE" ? result.rle.reconstructionMetrics.mse : result.huffman.reconstructionMetrics.mse;
+  const bestPsnr = bestMethod === "RLE" ? result.rle.reconstructionMetrics.psnr : result.huffman.reconstructionMetrics.psnr;
+  const compressionTime = bestMethod === "RLE" ? result.rle.encodeMs : result.huffman.encodeMs;
+  const decompressionTime = bestMethod === "RLE" ? result.rle.decodeMs : result.huffman.decodeMs;
+  return {
+    No: no,
+    "Image Name": item.fileInfo.name,
+    Format: datasetFormatKey(item.fileInfo.format),
+    "Quantization Level": levelValue,
+    "Original Size": bits(result.quantInputBits),
+    "Quantized Size": bits(result.quantization.theoreticalBits),
+    "RLE Size": bits(result.rle.theoreticalBits),
+    "Huffman Size": bits(result.huffman.payloadBits),
+    "Best Method": bestMethod,
+    "Compression Ratio": fixed(bestMetrics.cr),
+    "Space Saving": `${fixed(bestMetrics.ss)}%`,
+    MSE: fixed(bestMse),
+    PSNR: `${psnr(bestPsnr)} dB`,
+    "Compression Time": seconds(compressionTime),
+    "Decompression Time": seconds(decompressionTime),
+    Status: result.rle.identical && result.huffman.identical ? "Valid" : "Perlu cek decode",
+  };
+}
+
+function columnsForAnalysisView(view) {
+  if (view === "Detail") return TABLE_COLUMNS;
+  return [
+    "No",
+    "Nama Citra",
+    "Tahap",
+    "Level Kuantisasi",
+    "Ukuran Data Mentah",
+    "Ukuran Kompresi",
+    "Compression Ratio",
+    "Space Saving (%)",
+    "MSE",
+    "PSNR",
+    "Analisis",
+  ];
+}
+
+function datasetFormatKey(format) {
+  const value = String(format || "").replace(".", "").toUpperCase();
+  if (value === "JPG" || value === "JPEG") return "JPG/JPEG";
+  if (value === "PNG") return "PNG";
+  if (value === "BMP") return "BMP";
+  if (value === "TIF" || value === "TIFF") return "TIFF";
+  return value || "UNKNOWN";
+}
+
+function yieldToBrowser() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 function MetricList({ items }) {
   return (
     <dl className="metric-list">
@@ -1085,9 +1498,11 @@ function MetricList({ items }) {
   );
 }
 
-function HuffmanTreeSvg({ root }) {
+function HuffmanTreeSvg({ root, entries = [], fileName = "huffman_tree" }) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [treeMode, setTreeMode] = useState("Full Huffman Tree");
+  const svgRef = useRef(null);
   const nodes = [];
   const edges = [];
   const leaves = [];
@@ -1127,9 +1542,37 @@ function HuffmanTreeSvg({ root }) {
     setZoom(Math.max(0.45, Math.min(1.2, 1040 / width)));
     setPan({ x: 0, y: 0 });
   };
+  const exportSvg = () => {
+    if (!svgRef.current) return;
+    const source = new XMLSerializer().serializeToString(svgRef.current);
+    downloadText(source, `${fileName}_huffman_tree.svg`, "image/svg+xml;charset=utf-8");
+  };
+  const exportPng = () => {
+    if (!svgRef.current) return;
+    const source = new XMLSerializer().serializeToString(svgRef.current);
+    const blob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(width));
+      canvas.height = Math.max(1, Math.round(height));
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(image, 0, 0);
+      URL.revokeObjectURL(url);
+      downloadDataUrl(canvas.toDataURL("image/png"), `${fileName}_huffman_tree.png`);
+    };
+    image.src = url;
+  };
+  const topEntries = entries.filter((entry) => entry.frequency > 0).sort((a, b) => b.frequency - a.frequency).slice(0, 16);
   return (
     <div className="tree-wrap">
       <div className="tree-controls" aria-label="Kontrol pohon Huffman">
+        {["Full Huffman Tree", "Simplified Tree / Top Symbols View"].map((mode) => (
+          <button key={mode} type="button" className={treeMode === mode ? "tab-button active" : "secondary"} onClick={() => setTreeMode(mode)}>{mode}</button>
+        ))}
         <button type="button" className="secondary" onClick={() => setZoom((value) => Math.min(2.6, value + 0.15))}>Zoom In</button>
         <button type="button" className="secondary" onClick={() => setZoom((value) => Math.max(0.35, value - 0.15))}>Zoom Out</button>
         <button type="button" className="secondary" onClick={() => setPan((value) => ({ ...value, x: value.x - 60 }))}>Geser Kiri</button>
@@ -1138,8 +1581,21 @@ function HuffmanTreeSvg({ root }) {
         <button type="button" className="secondary" onClick={() => setPan((value) => ({ ...value, y: value.y + 60 }))}>Geser Bawah</button>
         <button type="button" className="secondary" onClick={fit}>Fit to Screen</button>
         <button type="button" className="secondary" onClick={reset}>Reset</button>
+        <button type="button" className="secondary" onClick={exportSvg}>Export SVG</button>
+        <button type="button" className="secondary" onClick={exportPng}>Export PNG</button>
       </div>
-      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Visualisasi pohon Huffman dengan edge 0 dan 1">
+      {treeMode === "Simplified Tree / Top Symbols View" ? (
+        <div className="top-symbols">
+          {topEntries.map((entry) => (
+            <article key={entry.symbol}>
+              <span>Simbol {entry.symbol}</span>
+              <strong>{entry.frequency}</strong>
+              <small>{entry.code ?? "-"} - panjang {entry.codeLength}</small>
+            </article>
+          ))}
+        </div>
+      ) : null}
+      <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Visualisasi pohon Huffman dengan edge 0 dan 1" className={treeMode === "Full Huffman Tree" ? "" : "visually-soft"}>
         <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
           {edges.map((edge, index) => (
             <g key={index}>
@@ -1330,8 +1786,9 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
   const primary = pickPrimaryCompression(method, rle, huffman);
   const decompressed = primary === "RLE" ? rleReconstructed : huffmanReconstructed;
   const compressedBits = primary === "RLE" ? rle.theoreticalBits : huffman.payloadBits;
-  const encodeMs = method === "Kuantisasi + RLE + Huffman" ? rle.encodeMs + huffman.encodeMs : (primary === "RLE" ? rle.encodeMs : huffman.encodeMs);
-  const decodeMs = method === "Kuantisasi + RLE + Huffman" ? rle.decodeMs + huffman.decodeMs : (primary === "RLE" ? rle.decodeMs : huffman.decodeMs);
+  const isComparisonMode = method === "Kuantisasi + Perbandingan RLE dan Huffman";
+  const encodeMs = isComparisonMode ? rle.encodeMs + huffman.encodeMs : (primary === "RLE" ? rle.encodeMs : huffman.encodeMs);
+  const decodeMs = isComparisonMode ? rle.decodeMs + huffman.decodeMs : (primary === "RLE" ? rle.decodeMs : huffman.decodeMs);
   const finalMetrics = computeMetrics(gray, decompressed, sourceRawBits, compressedBits);
   const reconstructionMetrics = computeMetrics(gray, quantization.reconstructed, sourceRawBits, quantization.theoreticalBits);
   const images = {
