@@ -743,6 +743,8 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         number="2"
         title="Grayscale"
         goal="Mengubah citra RGB menjadi satu kanal intensitas agar semua metode bekerja pada data piksel yang seragam."
+        controls="Upload citra pada panel Input Citra, lalu jalankan Proses & Evaluasi."
+        resultSummary={`Citra grayscale ${result.working.width} x ${result.working.height}, ${uniqueCount(result.gray)} nilai unik.`}
         process={<span>Setiap piksel dihitung dengan Gray = 0.299R + 0.587G + 0.114B, lalu nilai <Term name="intensitas" /> disimpan sebagai 0 sampai 255.</span>}
         howToRead="Bandingkan jumlah piksel, nilai unik, dan ukuran data mentah. PSNR Inf di tahap ini berarti data grayscale menjadi baseline evaluasi."
         status="Valid, citra berhasil dikonversi menjadi grayscale."
@@ -766,6 +768,8 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         number="3"
         title="Kuantisasi"
         goal="Mengurangi banyaknya tingkat keabuan supaya jumlah bit per piksel lebih kecil."
+        controls={`Level kuantisasi aktif dipilih dari dropdown; pilihan saat ini ${result.quantization.levelCount} level.`}
+        resultSummary={`${result.quantization.groups.length} kelompok terbentuk, ukuran teoritis ${bits(result.quantization.theoreticalBits)}.`}
         process={<span><Term name="Histogram" /> dibagi menjadi {result.quantization.levelCount} kelompok equal-population. Setiap rentang <Term name="intensitas" /> mendapat kode dan nilai representatif.</span>}
         howToRead="Lihat kolom jumlah piksel dan selisih. Semakin kecil selisih dari target, semakin merata pembagian kelompoknya."
         status={`Valid, ${result.quantization.groups.length} kelompok dibuat dan semua piksel mempunyai mapping.`}
@@ -797,6 +801,8 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         number="4"
         title="Run-Length Encoding (RLE)"
         goal="Menyimpan deretan simbol yang sama sebagai pasangan nilai dan panjang run."
+        controls="Gunakan tab Ringkasan, Pasangan per Baris, Dekompresi, dan Penjelasan untuk melihat detail bertahap."
+        resultSummary={`${result.rle.pairCount} run, ukuran teoritis ${bits(result.rle.theoreticalBits)}, CR ${fixed(result.rle.metrics.cr)}.`}
         process={<span>RLE diproses per baris. Pasangan (p,q) berarti <Term name="simbol" /> p muncul berurutan sebanyak q pada satu <Term name="run" />.</span>}
         howToRead="Jika jumlah run mendekati jumlah piksel, RLE biasanya tidak efisien. Jika run panjang banyak muncul, ukuran bit turun."
         status={result.rle.identical ? "Valid, decoded RLE identik dengan kode kuantisasi." : "Tidak valid, decoded RLE berbeda dari kode kuantisasi."}
@@ -849,6 +855,8 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         number="5"
         title="Huffman Coding"
         goal="Memberi kode biner pendek untuk simbol yang sering muncul dan kode lebih panjang untuk simbol yang jarang muncul."
+        controls="Gunakan tab frekuensi, penggabungan, pohon, kode biner, bitstream, dan dekompresi."
+        resultSummary={`Payload Huffman ${bits(result.huffman.payloadBits)}, entropy ${fixed(result.huffman.entropy, 4)}, efisiensi ${fixed(result.huffman.efficiency)}%.`}
         process={<span>Frekuensi simbol diurutkan, dua frekuensi terkecil digabung berulang sampai menjadi pohon. Jalur 0/1 dari akar membentuk <Term name="codebook" /> dan <Term name="bitstream" />.</span>}
         howToRead="Perhatikan probabilitas dan panjang kode. Simbol dengan frekuensi tinggi seharusnya mendapat kode lebih pendek."
         status={result.huffman.identical ? "Valid, decoded Huffman identik dengan kode kuantisasi." : "Tidak valid, decoded Huffman berbeda dari kode kuantisasi."}
@@ -901,6 +909,8 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         number="6"
         title="Dekompresi"
         goal="Membuktikan bahwa data hasil kompresi dapat dikembalikan menjadi kode kuantisasi yang sama."
+        controls="Gunakan tombol Unduh PNG pada setiap panel untuk menyimpan citra rekonstruksi."
+        resultSummary={`RLE ${result.rle.roundTripStatus}; Huffman ${result.huffman.roundTripStatus}; checksum awal ${result.quantizedChecksum}.`}
         process={<span>Setiap decoder menjalani validasi <Term name="round-trip" />, checksum, dan byte equality terhadap kode kuantisasi.</span>}
         howToRead="Status valid berarti data hasil decode identik dengan kode kuantisasi. Perbedaan visual terhadap grayscale asli berasal dari kuantisasi."
         status={result.rle.identical && result.huffman.identical ? "Valid, RLE dan Huffman sama-sama lolos round-trip." : "Ada decoder yang belum identik."}
@@ -951,6 +961,8 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         number="7"
         title="Evaluasi"
         goal="Membandingkan efisiensi ukuran dan kualitas hasil rekonstruksi dengan baseline yang jelas."
+        controls="Pilih tab Mode Teoritis Materi atau Ukuran Penyimpanan Aktual, lalu unduh CSV/detail jika perlu."
+        resultSummary={`Metode final ${result.compression.primary}, CR ${fixed(result.finalMetrics.cr)}, SS ${fixed(result.finalMetrics.ss)}%, MSE ${fixed(result.finalMetrics.mse)}.`}
         process={<span>Mode teoritis memakai rumus kuliah berbasis bit. Mode aktual menambahkan <Term name="payload" />, padding, <Term name="overhead" />, tabel frekuensi, dan mapping kuantisasi.</span>}
         howToRead="Compression Ratio = original size / compressed size. Space Saving = (1 - compressed/original) x 100%."
         status="Evaluasi selesai dengan baseline teoritis dan aktual terpisah."
@@ -969,7 +981,7 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
   );
 }
 
-function StageSection({ number, title, goal, process, howToRead, status, nextAction, children }) {
+function StageSection({ number, title, goal, controls, resultSummary, process, howToRead, status, nextAction, children }) {
   return (
     <section className="stage-section" aria-labelledby={`stage-${number}`}>
       <div className="stage-header">
@@ -982,6 +994,8 @@ function StageSection({ number, title, goal, process, howToRead, status, nextAct
       </div>
       <div className="stage-info">
         <p><strong>Tujuan:</strong> {goal}</p>
+        <p><strong>Kontrol input:</strong> {controls}</p>
+        <p><strong>Hasil utama:</strong> {resultSummary}</p>
         <p><strong>Proses:</strong> {process}</p>
         <p><strong>Cara membaca hasil:</strong> {howToRead}</p>
         <p><strong>Tindakan berikutnya:</strong> {nextAction}</p>

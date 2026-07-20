@@ -24,6 +24,8 @@ test("UI memakai progressive disclosure untuk detail akademik", () => {
   assert.match(page, /details className="table-section disclosure"/);
   assert.match(page, /Apa arti hasil ini\?/);
   assert.match(page, /Unggah citra untuk memulai analisis/);
+  assert.match(page, /Kontrol input:/);
+  assert.match(page, /Hasil utama:/);
 });
 
 test("UI menjelaskan istilah teknis dengan tooltip", () => {
