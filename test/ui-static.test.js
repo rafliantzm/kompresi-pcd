@@ -104,3 +104,9 @@ test("RLE dan histogram memakai ringkasan agar tabel besar tidak menumpuk", () =
   assert.match(css, /histogram-chart/);
   assert.match(css, /inline-disclosure/);
 });
+
+test("Tabel pasangan RLE tidak mengakses state evaluasi global", () => {
+  const match = page.match(/function RlePairsTable[\s\S]*?function RleRowSummaryTable/);
+  assert.ok(match, "komponen RlePairsTable harus ditemukan");
+  assert.doesNotMatch(match[0], /result\./);
+});

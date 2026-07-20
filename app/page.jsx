@@ -1313,10 +1313,6 @@ function RlePairsTable({ rows, rle }) {
           ))}
         </tbody>
       </table>
-      <p className="table-note">
-        Baseline ukuran aktual dihitung dari resolusi kerja {result.working.width} x {result.working.height}.
-        Resolusi sumber file adalah {result.resolutionInfo.sourceWidth} x {result.resolutionInfo.sourceHeight}; {result.resolutionInfo.wasResized ? "citra diperkecil agar pemrosesan browser tetap stabil." : "tidak ada resize pada proses ini."}
-      </p>
     </div>
   );
 }
@@ -1563,6 +1559,10 @@ function ActualEvaluation({ result }) {
           ))}
         </tbody>
       </table>
+      <p className="table-note">
+        Baseline ukuran aktual dihitung dari resolusi kerja {result.working.width} x {result.working.height}.
+        Resolusi sumber file adalah {result.resolutionInfo.sourceWidth} x {result.resolutionInfo.sourceHeight}; {result.resolutionInfo.wasResized ? "citra diperkecil agar pemrosesan browser tetap stabil." : "tidak ada resize pada proses ini."}
+      </p>
     </div>
   );
 }
