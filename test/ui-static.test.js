@@ -46,10 +46,12 @@ test("UI responsive tidak memakai grid hasil yang terlalu padat", () => {
 
 test("Pohon Huffman besar dan mempunyai kontrol navigasi", () => {
   assert.match(css, /tree-wrap[\s\S]*min-height:\s*600px/);
-  for (const label of ["Zoom In", "Zoom Out", "Geser Kiri", "Geser Kanan", "Geser Atas", "Geser Bawah", "Fit to Screen", "Reset", "Export SVG", "Export PNG"]) {
+  for (const label of ["Zoom In", "Zoom Out", "Geser Kiri", "Geser Kanan", "Geser Atas", "Geser Bawah", "Fit to Screen", "Center Root", "Expand Fullscreen", "Reset", "Export SVG", "Export PNG"]) {
     assert.match(page, new RegExp(label));
   }
-  assert.match(page, /Simplified Tree \/ Top Symbols View/);
+  assert.match(page, /Mode Sederhana/);
+  assert.match(page, /Mode Detail/);
+  assert.match(page, /Cari simbol/);
 });
 
 test("Pipeline comparison mode tidak ambigu", () => {
@@ -71,6 +73,34 @@ test("Dataset recap dan multi-level testing tersedia", () => {
 test("Wide table memiliki compact view dan kolom sticky penting", () => {
   assert.match(page, /analysisTableView/);
   assert.match(page, /\["Ringkas", "Detail"\]/);
-  assert.match(css, /multi-table th:nth-child\(2\)/);
+  assert.match(page, /multi-level-table-wrapper/);
+  assert.match(page, /MULTI_LEVEL_TABS/);
+  assert.match(css, /multi-level-table th/);
   assert.match(css, /position:\s*sticky/);
+});
+
+test("UI memisahkan kualitas rekonstruksi dan validasi round-trip", () => {
+  for (const label of ["Reconstruction MSE", "Reconstruction PSNR", "Round-trip MSE", "Round-trip PSNR", "Status Validasi", "Waktu Total"]) {
+    assert.match(page, new RegExp(label));
+  }
+  assert.match(page, /Validasi Lossless \/ Round-trip/);
+  assert.match(page, /buildReconstructionQualityMetrics/);
+  assert.match(page, /buildRoundTripValidationMetrics/);
+});
+
+test("UI menjelaskan resolusi sumber dan resolusi kerja", () => {
+  assert.match(page, /Mode Resolusi/);
+  assert.match(page, /Resolusi Pemrosesan/);
+  assert.match(page, /Resolusi sumber/);
+  assert.match(page, /Resolusi kerja/);
+  assert.match(css, /resolution-panel/);
+  assert.match(css, /warning-note/);
+});
+
+test("RLE dan histogram memakai ringkasan agar tabel besar tidak menumpuk", () => {
+  assert.match(page, /RleRowSummaryTable/);
+  assert.match(page, /sampleRlePairs/);
+  assert.match(page, /Lihat tabel lengkap histogram/);
+  assert.match(css, /histogram-chart/);
+  assert.match(css, /inline-disclosure/);
 });

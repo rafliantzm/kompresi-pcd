@@ -26,20 +26,39 @@ const MULTI_LEVEL_COLUMNS = [
   "No",
   "Image Name",
   "Format",
+  "Resolusi Sumber",
+  "Resolusi Kerja",
   "Quantization Level",
+  "Bit per Piksel",
   "Original Size",
   "Quantized Size",
   "RLE Size",
   "Huffman Size",
+  "Compression Ratio RLE",
+  "Compression Ratio Huffman",
+  "Space Saving RLE",
+  "Space Saving Huffman",
+  "Reconstruction MSE Kuantisasi",
+  "Reconstruction PSNR Kuantisasi",
+  "Reconstruction MSE RLE",
+  "Reconstruction PSNR RLE",
+  "Reconstruction MSE Huffman",
+  "Reconstruction PSNR Huffman",
+  "Round-trip MSE RLE",
+  "Round-trip PSNR RLE",
+  "Round-trip MSE Huffman",
+  "Round-trip PSNR Huffman",
+  "Waktu Kuantisasi",
+  "Waktu RLE Encode",
+  "Waktu RLE Decode",
+  "Waktu Huffman Encode",
+  "Waktu Huffman Decode",
+  "Total Waktu RLE",
+  "Total Waktu Huffman",
   "Best Method",
-  "Compression Ratio",
-  "Space Saving",
-  "MSE",
-  "PSNR",
-  "Compression Time",
-  "Decompression Time",
   "Status",
 ];
+const MULTI_LEVEL_TABS = ["Ukuran & Efisiensi", "Kualitas Citra", "Performa"];
 
 const TERM_HELP = {
   histogram: "Histogram menunjukkan jumlah piksel pada setiap nilai intensitas grayscale.",
@@ -73,10 +92,18 @@ const TABLE_COLUMNS = [
   "Jumlah Run",
   "Waktu Encode",
   "Waktu Decode",
+  "Waktu Total",
   "Compression Ratio",
   "Space Saving (%)",
-  "MSE",
-  "PSNR",
+  "Reconstruction MSE",
+  "Reconstruction PSNR",
+  "Round-trip MSE",
+  "Round-trip PSNR",
+  "Piksel Berbeda",
+  "Max Absolute Difference",
+  "Checksum Sebelum",
+  "Checksum Sesudah",
+  "Status Validasi",
   "Analisis",
 ];
 
@@ -89,6 +116,7 @@ export default function Home() {
   const [sourceProfile, setSourceProfile] = useState(null);
   const [level, setLevel] = useState(64);
   const [method, setMethod] = useState("Kuantisasi + Perbandingan RLE dan Huffman");
+  const [processingMode, setProcessingMode] = useState("optimized");
   const [outputMode, setOutputMode] = useState("1. Alur Lengkap");
   const [showDetailAfterEval, setShowDetailAfterEval] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
@@ -144,7 +172,7 @@ export default function Home() {
       for (const [index, file] of files.entries()) {
         setProcessingStage(`Membaca citra ${index + 1}/${files.length}`);
         try {
-          const image = await decodeImageFile(file);
+          const image = await decodeImageFile(file, processingMode);
           setProcessingStage(`Menganalisis level sumber ${index + 1}/${files.length}`);
           const grayPreview = toGrayscale(image.rgba, image.width, image.height);
           const profile = analyzeSourceQuantization(grayPreview);
@@ -290,6 +318,7 @@ export default function Home() {
     setSourceProfile(null);
     setLevel(64);
     setMethod("Kuantisasi + Perbandingan RLE dan Huffman");
+    setProcessingMode("optimized");
     setOutputMode("1. Alur Lengkap");
     setShowDetailAfterEval(false);
     setShowDetail(false);
@@ -385,6 +414,15 @@ export default function Home() {
           </label>
 
           <label className="field wide">
+            <span>Mode Resolusi</span>
+            <select value={processingMode} onChange={(event) => setProcessingMode(event.target.value)} disabled={isProcessing || isMultiTesting}>
+              <option value="optimized">Optimalkan untuk Browser</option>
+              <option value="original">Proses dengan Resolusi Asli</option>
+            </select>
+            <small className="help">Mode optimasi dapat mengecilkan citra besar. Mode asli lebih akurat terhadap file sumber, tetapi bisa lebih lambat.</small>
+          </label>
+
+          <label className="field wide">
             <span>Mode Output</span>
             <select value={outputMode} onChange={(event) => setOutputMode(event.target.value)}>
               {OUTPUT_MODES.map((value) => (
@@ -440,6 +478,8 @@ export default function Home() {
 
         <DatasetRecap items={datasetItems} />
 
+        {decoded && <ResolutionPanel decoded={decoded} />}
+
         {(multiLevelRows.length > 0 || isMultiTesting) && (
           <MultiLevelResults rows={multiLevelRows} progress={multiProgress} isRunning={isMultiTesting} onDownload={downloadMultiLevelCsv} />
         )}
@@ -486,8 +526,8 @@ export default function Home() {
             <ImagePanel title="Asli" src={decoded?.previewUrl} meta={decoded ? `${decoded.originalWidth} x ${decoded.originalHeight}` : "-"} />
             <ImagePanel title="Grayscale" src={result?.images.gray} meta={result ? `${result.working.width} x ${result.working.height}` : "-"} />
             <ImagePanel title="Kuantisasi" src={result?.images.quantized} meta={result?.quantization ? `${result.quantization.levelCount} level` : "-"} />
-            <ImagePanel title="RLE Dekompresi" src={result?.images.rleDecompressed} meta={result ? result.rle.roundTripStatus : "-"} />
-            <ImagePanel title="Huffman Dekompresi" src={result?.images.huffmanDecompressed} meta={result ? result.huffman.roundTripStatus : "-"} />
+            <ImagePanel title="RLE Dekompresi" src={result?.images.rleDecompressed} meta={result ? (result.rle.roundTripValidation.isByteIdentical ? "Round-trip valid" : "Round-trip gagal") : "-"} />
+            <ImagePanel title="Huffman Dekompresi" src={result?.images.huffmanDecompressed} meta={result ? (result.huffman.roundTripValidation.isByteIdentical ? "Round-trip valid" : "Round-trip gagal") : "-"} />
           </div>
         </section>
         )}
@@ -641,13 +681,56 @@ function DatasetRecap({ items }) {
   );
 }
 
+function ResolutionPanel({ decoded }) {
+  const info = decoded.resolutionInfo;
+  return (
+    <section className="resolution-panel" aria-label="Resolusi pemrosesan">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Resolusi Pemrosesan</p>
+          <h2>Sumber vs Resolusi Kerja</h2>
+        </div>
+        <span>{info.processingMode === "optimized" ? "Optimasi Browser" : "Resolusi Asli"}</span>
+      </div>
+      {info.wasResized && (
+        <div className="warning-note">
+          Citra diperkecil dari {info.sourceWidth} x {info.sourceHeight} menjadi {info.workingWidth} x {info.workingHeight} agar pemrosesan tetap stabil di browser. Semua ukuran algoritmik dan evaluasi kualitas dihitung berdasarkan resolusi kerja.
+        </div>
+      )}
+      <div className="mini-table-wrap">
+        <table className="mini-table">
+          <tbody>
+            <tr><th>Resolusi sumber</th><td>{info.sourceWidth} x {info.sourceHeight} px</td></tr>
+            <tr><th>Jumlah piksel sumber</th><td>{number(info.sourcePixelCount)} piksel</td></tr>
+            <tr><th>Resolusi kerja</th><td>{info.workingWidth} x {info.workingHeight} px</td></tr>
+            <tr><th>Jumlah piksel kerja</th><td>{number(info.workingPixelCount)} piksel</td></tr>
+            <tr><th>Skala pemrosesan</th><td>{percent(info.resizeScale * 100)}</td></tr>
+            <tr><th>Mode</th><td>{info.processingMode === "optimized" ? "Optimasi Browser" : "Resolusi Asli"}</td></tr>
+            <tr><th>Alasan resize</th><td>{info.resizeReason ?? "Tidak ada resize; algoritma memakai resolusi sumber."}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <Meaning>Resolusi sumber adalah ukuran asli file yang diunggah. Resolusi kerja adalah ukuran citra yang digunakan oleh algoritma grayscale, kuantisasi, RLE, Huffman, MSE, dan PSNR.</Meaning>
+    </section>
+  );
+}
+
 function MultiLevelResults({ rows, progress, isRunning, onDownload }) {
   const [query, setQuery] = useState("");
-  const [page, setPage] = useState(0);
+  const [activeTable, setActiveTable] = useState("Ukuran & Efisiensi");
   const filtered = filterRows(rows, query, ["Image Name", "Format", "Quantization Level", "Best Method", "Status"]);
-  const pageCount = Math.max(1, Math.ceil(filtered.length / TABLE_PAGE_SIZE));
-  const safePage = Math.min(page, pageCount - 1);
-  const visibleRows = filtered.slice(safePage * TABLE_PAGE_SIZE, safePage * TABLE_PAGE_SIZE + TABLE_PAGE_SIZE);
+  const grouped = groupRowsByImage(filtered);
+  const columns = multiLevelColumnsFor(activeTable);
+  const downloadTable = () => {
+    const csv = toCsv([["Image Name", "Format", "Resolusi Sumber", "Resolusi Kerja", ...columns], ...filtered.map((row) => [
+      row["Image Name"],
+      row.Format,
+      row["Resolusi Sumber"],
+      row["Resolusi Kerja"],
+      ...columns.map((column) => row[column] ?? "-"),
+    ])]);
+    downloadText(csv, `multi_level_${activeTable.toLowerCase().replaceAll(" ", "_").replaceAll("&", "dan")}.csv`, "text/csv;charset=utf-8");
+  };
   return (
     <section className="table-section">
       <div className="section-heading">
@@ -658,31 +741,46 @@ function MultiLevelResults({ rows, progress, isRunning, onDownload }) {
         <span>{isRunning ? progress || "Memproses..." : `${rows.length} baris`}</span>
       </div>
       <div className="table-toolbar">
-        <SearchBox value={query} onChange={(value) => { setQuery(value); setPage(0); }} placeholder="Cari nama citra, format, level, metode terbaik, atau status" />
+        <SearchBox value={query} onChange={setQuery} placeholder="Cari nama citra, format, level, metode terbaik, atau status" />
+        <Tabs tabs={MULTI_LEVEL_TABS} active={activeTable} onChange={setActiveTable} />
+        <button type="button" className="secondary" onClick={downloadTable} disabled={!rows.length}>Unduh CSV Tabel Ini</button>
         <button type="button" className="secondary" onClick={onDownload} disabled={!rows.length}>Unduh CSV Multi-Level</button>
       </div>
-      <TablePager page={safePage} pageCount={pageCount} onPrev={() => setPage(Math.max(0, safePage - 1))} onNext={() => setPage(Math.min(pageCount - 1, safePage + 1))} total={filtered.length} />
-      <div className="table-wrap wide-affordance">
-        <table className="multi-table">
-          <thead>
-            <tr>
-              {MULTI_LEVEL_COLUMNS.map((column) => <th key={column}>{column}</th>)}
-            </tr>
-          </thead>
-          <tbody>
-            {visibleRows.length ? visibleRows.map((row) => (
-              <tr key={`${row.No}-${row["Image Name"]}-${row["Quantization Level"]}`}>
-                {MULTI_LEVEL_COLUMNS.map((column) => <td key={column}>{row[column]}</td>)}
-              </tr>
-            )) : (
-              <tr>
-                <td colSpan={MULTI_LEVEL_COLUMNS.length} className="empty">Belum ada hasil yang cocok dengan pencarian.</td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      {grouped.length ? grouped.map((group) => (
+        <article key={group.key} className="multi-level-group">
+          <div className="multi-level-meta">
+            <span>Nama file: <strong>{group.rows[0]["Image Name"]}</strong></span>
+            <span>Format: <strong>{group.rows[0].Format}</strong></span>
+            <span>Resolusi sumber: <strong>{group.rows[0]["Resolusi Sumber"]}</strong></span>
+            <span>Resolusi kerja: <strong>{group.rows[0]["Resolusi Kerja"]}</strong></span>
+          </div>
+          <MultiLevelTable rows={group.rows} columns={columns} />
+        </article>
+      )) : (
+        <div className="empty">Belum ada hasil yang cocok dengan pencarian.</div>
+      )}
     </section>
+  );
+}
+
+function MultiLevelTable({ rows, columns }) {
+  return (
+    <div className="multi-level-table-wrapper">
+      <table className="multi-level-table">
+        <thead>
+          <tr>
+            {columns.map((column) => <th key={column} title={metricTooltip(column)}>{column}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={`${row.No}-${row["Quantization Level"]}`}>
+              {columns.map((column) => <td key={column}>{row[column]}</td>)}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -705,18 +803,18 @@ function buildSummaryStats(result) {
       { label: "Level Sumber", value: "-", note: "Dibaca otomatis dari nilai unik grayscale" },
       { label: "Compression Ratio", value: "-", note: "Muncul setelah evaluasi" },
       { label: "Space Saving", value: "-", note: "Muncul setelah evaluasi" },
-      { label: "MSE", value: "-", note: "Muncul setelah dekompresi" },
-      { label: "PSNR", value: "-", note: "Muncul setelah dekompresi" },
+      { label: "Reconstruction MSE", value: "-", note: "Muncul setelah dekompresi" },
+      { label: "Round-trip", value: "-", note: "Muncul setelah validasi decode" },
     ];
   }
 
   return [
     { label: "File", value: fileSize(result.file.size), note: result.file.name },
     { label: "Level Sumber", value: `${result.sourceProfile.estimatedLevel} level`, note: `${result.sourceProfile.uniqueCount} nilai unik` },
-    { label: "RLE", value: bits(result.rle.theoreticalBits), note: result.rle.roundTripStatus },
-    { label: "Huffman", value: bits(result.huffman.payloadBits), note: result.huffman.roundTripStatus },
+    { label: "RLE", value: bits(result.rle.theoreticalBits), note: result.rle.roundTripValidation.isByteIdentical ? "Round-trip valid" : "Round-trip gagal" },
+    { label: "Huffman", value: bits(result.huffman.payloadBits), note: result.huffman.roundTripValidation.isByteIdentical ? "Round-trip valid" : "Round-trip gagal" },
     { label: "Compression Ratio", value: fixed(result.finalMetrics.cr), note: "Semakin besar, semakin baik" },
-    { label: "Kualitas", value: `MSE ${fixed(result.reconstructionMetrics.mse)}`, note: `PSNR ${psnr(result.reconstructionMetrics.psnr)} dB` },
+    { label: "Kualitas", value: `MSE ${fixed(result.quantReconstructionQuality.mse, 6)}`, note: `PSNR ${psnrLabel(result.quantReconstructionQuality.psnr)}` },
   ];
 }
 
@@ -725,13 +823,17 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
   const [huffmanTab, setHuffmanTab] = useState("Tabel Frekuensi");
   const [evaluationTab, setEvaluationTab] = useState("Mode Teoritis Materi");
   const [rleSearch, setRleSearch] = useState("");
+  const [selectedRleRow, setSelectedRleRow] = useState(0);
   const [huffmanSearch, setHuffmanSearch] = useState("");
 
   const rlePairs = result.rle.rows.flatMap((row) => row.pairs.map((pair, index) => ({ row: row.rowIndex, run: index + 1, ...pair })));
-  const filteredRlePairs = filterRows(rlePairs, rleSearch, ["row", "run", "value", "count"]);
-  const rlePageCount = Math.max(1, Math.ceil(filteredRlePairs.length / RLE_PAGE_SIZE));
+  const rleRowsSummary = result.rle.rows.map((row) => buildRleRowSummary(row, result.rle));
+  const filteredRleRows = filterRows(rleRowsSummary, rleSearch, ["row"]);
+  const rlePageCount = Math.max(1, Math.ceil(filteredRleRows.length / 25));
   const safeRlePage = Math.min(rlePage, rlePageCount - 1);
-  const visiblePairs = filteredRlePairs.slice(safeRlePage * RLE_PAGE_SIZE, safeRlePage * RLE_PAGE_SIZE + RLE_PAGE_SIZE);
+  const visibleRleRows = filteredRleRows.slice(safeRlePage * 25, safeRlePage * 25 + 25);
+  const selectedRleData = result.rle.rows.find((row) => row.rowIndex === selectedRleRow) ?? result.rle.rows[0];
+  const selectedRlePairs = selectedRleData.pairs.map((pair, index) => ({ row: selectedRleData.rowIndex, run: index + 1, ...pair }));
   const filteredHuffmanEntries = filterRows(result.huffman.codeEntries, huffmanSearch, ["symbol", "frequency", "code", "codeLength"]);
   const huffmanMergeRows = result.huffman.mergeHistory.length
     ? result.huffman.mergeHistory
@@ -775,24 +877,7 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         status={`Valid, ${result.quantization.groups.length} kelompok dibuat dan semua piksel mempunyai mapping.`}
         nextAction="Gunakan kode kuantisasi sebagai input RLE dan Huffman."
       >
-        <article className="analysis-card full-width">
-          <div className="section-heading compact">
-            <div>
-              <p className="eyebrow">Histogram Grayscale</p>
-              <h2>Distribusi Intensitas</h2>
-            </div>
-            <span>{result.quantization.totalPixels} piksel</span>
-          </div>
-          <div className="histogram-bars">
-            {result.quantization.histogram.map((count, intensity) => count > 0 ? (
-              <div key={intensity} className="histogram-row">
-                <span>{intensity}</span>
-                <div><i style={{ width: `${Math.max(4, (count / result.maxHistogramCount) * 100)}%` }} /></div>
-                <strong>{count}</strong>
-              </div>
-            ) : null)}
-          </div>
-        </article>
+        <HistogramPanel result={result} />
         <QuantizationTable groups={result.quantization.groups} />
         <Meaning>Kuantisasi mengurangi banyaknya tingkat keabuan. Setiap rentang intensitas dipetakan ke kode baru agar jumlah bit per piksel berkurang, lalu inverse quantization memakai nilai representatif untuk membentuk citra kembali.</Meaning>
       </StageSection>
@@ -810,26 +895,37 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
       >
         <Tabs tabs={["Ringkasan", "Pasangan per Baris", "Dekompresi", "Penjelasan"]} active={rleTab} onChange={setRleTab} />
         {rleTab === "Ringkasan" && (
-          <MetricList items={[
-            ["Total run", result.rle.pairCount],
-            ["Rata-rata panjang run", fixed(result.rle.averageRunLength)],
-            ["Run terpanjang", result.rle.longestRun],
-            ["Symbol bit width", `${result.rle.symbolBitWidth} bit`],
-            ["Count bit width", `${result.rle.countBitWidth} bit`],
-            ["Ukuran awal", bits(result.compression.sourceRawBits)],
-            ["Ukuran RLE", bits(result.rle.theoreticalBits)],
-            ["Payload", `${bytes(result.rle.payloadBytes)} / ${bits(result.rle.theoreticalBits)}`],
-            ["Compression Ratio", fixed(result.rle.metrics.cr)],
-            ["Space Saving", `${fixed(result.rle.metrics.ss)}%`],
-            ["Waktu encode", seconds(result.rle.encodeMs)],
-            ["Waktu decode", seconds(result.rle.decodeMs)],
-          ]} />
+          <>
+            <MetricList items={[
+              ["Jumlah baris", result.rle.height],
+              ["Total piksel", number(result.working.pixels)],
+              ["Total pasangan", number(result.rle.pairCount)],
+              ["Rata-rata pasangan/baris", decimal(result.rle.pairCount / result.rle.height, 2)],
+              ["Rata-rata panjang run", decimal(result.rle.averageRunLength, 4)],
+              ["Run terpanjang", number(result.rle.longestRun)],
+              ["Baris run paling sedikit", rleRowsSummary.reduce((best, row) => row.runCount < best.runCount ? row : best, rleRowsSummary[0])?.row],
+              ["Baris run paling banyak", rleRowsSummary.reduce((best, row) => row.runCount > best.runCount ? row : best, rleRowsSummary[0])?.row],
+              ["Ukuran teoritis", bits(result.rle.theoreticalBits)],
+              ["Compression Ratio", decimal(result.rle.metrics.cr, 4)],
+              ["Space Saving", percent(result.rle.metrics.ss)],
+              ["Total waktu", milliseconds(result.rle.timing.totalMs)],
+            ]} />
+            <Meaning>Untuk menjaga halaman tetap ringan, tabel menampilkan pasangan RLE berdasarkan baris yang dipilih. Seluruh pasangan tetap tersedia melalui export data RLE.</Meaning>
+          </>
         )}
         {rleTab === "Pasangan per Baris" && (
           <>
-            <SearchBox value={rleSearch} onChange={(value) => { setRleSearch(value); setRlePage(0); }} placeholder="Cari baris, nomor run, p, atau q" />
-            <TablePager page={safeRlePage} pageCount={rlePageCount} onPrev={() => setRlePage(Math.max(0, safeRlePage - 1))} onNext={() => setRlePage(Math.min(rlePageCount - 1, safeRlePage + 1))} total={filteredRlePairs.length} />
-            <RlePairsTable rows={visiblePairs} rle={result.rle} />
+            <SearchBox value={rleSearch} onChange={(value) => { setRleSearch(value); setRlePage(0); }} placeholder="Cari nomor baris" />
+            <TablePager page={safeRlePage} pageCount={rlePageCount} onPrev={() => setRlePage(Math.max(0, safeRlePage - 1))} onNext={() => setRlePage(Math.min(rlePageCount - 1, safeRlePage + 1))} total={filteredRleRows.length} />
+            <RleRowSummaryTable rows={visibleRleRows} selectedRow={selectedRleRow} onSelect={setSelectedRleRow} />
+            <div className="section-heading compact">
+              <div>
+                <p className="eyebrow">Detail Baris {selectedRleData.rowIndex}</p>
+                <h2>Pasangan RLE Baris Terpilih</h2>
+              </div>
+              <span>{selectedRleData.pairs.length} pasangan, sampel awal dan akhir</span>
+            </div>
+            <RlePairsTable rows={sampleRlePairs(selectedRlePairs)} rle={result.rle} />
           </>
         )}
         {rleTab === "Dekompresi" && (
@@ -910,7 +1006,7 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         title="Dekompresi"
         goal="Membuktikan bahwa data hasil kompresi dapat dikembalikan menjadi kode kuantisasi yang sama."
         controls="Gunakan tombol Unduh PNG pada setiap panel untuk menyimpan citra rekonstruksi."
-        resultSummary={`RLE ${result.rle.roundTripStatus}; Huffman ${result.huffman.roundTripStatus}; checksum awal ${result.quantizedChecksum}.`}
+        resultSummary={`RLE ${result.rle.roundTripValidation.isByteIdentical ? "valid" : "gagal"}; Huffman ${result.huffman.roundTripValidation.isByteIdentical ? "valid" : "gagal"}; checksum awal ${result.quantizedChecksum}.`}
         process={<span>Setiap decoder menjalani validasi <Term name="round-trip" />, checksum, dan byte equality terhadap kode kuantisasi.</span>}
         howToRead="Status valid berarti data hasil decode identik dengan kode kuantisasi. Perbedaan visual terhadap grayscale asli berasal dari kuantisasi."
         status={result.rle.identical && result.huffman.identical ? "Valid, RLE dan Huffman sama-sama lolos round-trip." : "Ada decoder yang belum identik."}
@@ -962,7 +1058,7 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         title="Evaluasi"
         goal="Membandingkan efisiensi ukuran dan kualitas hasil rekonstruksi dengan baseline yang jelas."
         controls="Pilih tab Mode Teoritis Materi atau Ukuran Penyimpanan Aktual, lalu unduh CSV/detail jika perlu."
-        resultSummary={`Metode final ${result.compression.primary}, CR ${fixed(result.finalMetrics.cr)}, SS ${fixed(result.finalMetrics.ss)}%, MSE ${fixed(result.finalMetrics.mse)}.`}
+        resultSummary={`Metode final ${result.compression.primary}, CR ${fixed(result.finalMetrics.cr)}, SS ${fixed(result.finalMetrics.ss)}%, Reconstruction MSE ${fixed(result.finalMetrics.mse, 6)}.`}
         process={<span>Mode teoritis memakai rumus kuliah berbasis bit. Mode aktual menambahkan <Term name="payload" />, padding, <Term name="overhead" />, tabel frekuensi, dan mapping kuantisasi.</span>}
         howToRead="Compression Ratio = original size / compressed size. Space Saving = (1 - compressed/original) x 100%."
         status="Evaluasi selesai dengan baseline teoritis dan aktual terpisah."
@@ -970,6 +1066,7 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
       >
         <Tabs tabs={["Mode Teoritis Materi", "Ukuran Penyimpanan Aktual"]} active={evaluationTab} onChange={setEvaluationTab} />
         {evaluationTab === "Mode Teoritis Materi" ? <TheoreticalEvaluation result={result} /> : <ActualEvaluation result={result} />}
+        <EvaluationMetricBlocks result={result} />
         <Meaning>MSE mengukur rata-rata kesalahan piksel. Nilai lebih kecil lebih baik. PSNR mengukur kemiripan kualitas; nilai lebih besar lebih baik.</Meaning>
         <PerMethodConclusions result={result} />
         <div className="conclusion-box">
@@ -1099,6 +1196,94 @@ function QuantizationTable({ groups }) {
   );
 }
 
+function HistogramPanel({ result }) {
+  const [mode, setMode] = useState("Histogram Grayscale");
+  const [page, setPage] = useState(0);
+  const histogram = mode === "Histogram Grayscale"
+    ? result.quantization.histogram
+    : buildHistogramFromCodes(result.quantizedCodes, result.quantization.levelCount);
+  const maxCount = Math.max(...histogram);
+  const rows = histogram.map((frequency, intensity) => {
+    const group = mode === "Histogram Grayscale" ? findQuantizationGroup(result.quantization.groups, intensity) : result.quantization.groups[intensity];
+    return {
+      intensity,
+      frequency,
+      percentage: result.working.pixels ? (frequency / result.working.pixels) * 100 : 0,
+      group: group?.code ?? "-",
+      code: group?.outputBitCode ?? "-",
+    };
+  }).filter((row) => row.frequency > 0);
+  const summary = buildHistogramSummary(histogram, result.working.pixels);
+  const pageCount = Math.max(1, Math.ceil(rows.length / TABLE_PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+  const visibleRows = rows.slice(safePage * TABLE_PAGE_SIZE, safePage * TABLE_PAGE_SIZE + TABLE_PAGE_SIZE);
+
+  return (
+    <article className="analysis-card full-width">
+      <div className="section-heading compact">
+        <div>
+          <p className="eyebrow">Histogram Ringkas</p>
+          <h2>Grafik Distribusi Intensitas</h2>
+        </div>
+        <div className="tabs small">
+          {["Histogram Grayscale", "Histogram Setelah Kuantisasi"].map((item) => (
+            <button key={item} type="button" className={mode === item ? "tab-button active" : "tab-button"} onClick={() => { setMode(item); setPage(0); }}>
+              {item}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="histogram-chart" role="img" aria-label="Grafik histogram ringkas">
+        {histogram.map((count, index) => (
+          <span
+            key={index}
+            title={`${mode === "Histogram Grayscale" ? "Intensitas" : "Kode"} ${index}: ${number(count)} piksel (${percent(result.working.pixels ? (count / result.working.pixels) * 100 : 0)})`}
+            style={{ height: `${Math.max(1, maxCount ? (count / maxCount) * 100 : 1)}%` }}
+          />
+        ))}
+      </div>
+      <MetricList items={[
+        ["Intensitas minimum", summary.min],
+        ["Intensitas maksimum", summary.max],
+        ["Nilai paling sering", summary.mode],
+        ["Jumlah nilai unik", summary.unique],
+        ["Mean", decimal(summary.mean, 3)],
+        ["Median", decimal(summary.median, 3)],
+        ["Mode", summary.mode],
+        ["Total piksel", number(summary.total)],
+      ]} />
+      <details className="inline-disclosure">
+        <summary>Lihat tabel lengkap histogram</summary>
+        <TablePager page={safePage} pageCount={pageCount} onPrev={() => setPage(Math.max(0, safePage - 1))} onNext={() => setPage(Math.min(pageCount - 1, safePage + 1))} total={rows.length} />
+        <div className="mini-table-wrap">
+          <table className="mini-table">
+            <thead>
+              <tr>
+                <th>Intensitas/Kode</th>
+                <th>Frekuensi</th>
+                <th>Persentase</th>
+                <th>Kelompok</th>
+                <th>Kode Kuantisasi</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map((row) => (
+                <tr key={row.intensity}>
+                  <td>{row.intensity}</td>
+                  <td>{number(row.frequency)}</td>
+                  <td>{percent(row.percentage)}</td>
+                  <td>{row.group}</td>
+                  <td>{row.code}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    </article>
+  );
+}
+
 function RlePairsTable({ rows, rle }) {
   return (
     <div className="mini-table-wrap">
@@ -1121,9 +1306,46 @@ function RlePairsTable({ rows, rle }) {
               <td>{pair.run}</td>
               <td>{pair.value}</td>
               <td>{pair.count}</td>
-              <td>{pair.value.toString(2).padStart(rle.symbolBitWidth, "0")}</td>
-              <td>{pair.count.toString(2).padStart(rle.countBitWidth, "0")}</td>
-              <td>{rle.symbolBitWidth + rle.countBitWidth} bit</td>
+              <td>{formatPairBinary(pair.value, rle.symbolBitWidth)}</td>
+              <td>{formatPairBinary(pair.count, rle.countBitWidth)}</td>
+              <td>{pair.isSeparator ? "-" : `${rle.symbolBitWidth + rle.countBitWidth} bit`}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="table-note">
+        Baseline ukuran aktual dihitung dari resolusi kerja {result.working.width} x {result.working.height}.
+        Resolusi sumber file adalah {result.resolutionInfo.sourceWidth} x {result.resolutionInfo.sourceHeight}; {result.resolutionInfo.wasResized ? "citra diperkecil agar pemrosesan browser tetap stabil." : "tidak ada resize pada proses ini."}
+      </p>
+    </div>
+  );
+}
+
+function RleRowSummaryTable({ rows, selectedRow, onSelect }) {
+  return (
+    <div className="mini-table-wrap">
+      <table className="mini-table">
+        <thead>
+          <tr>
+            <th>Baris</th>
+            <th>Jumlah Piksel</th>
+            <th>Jumlah Run</th>
+            <th>Run Terpanjang</th>
+            <th>Rata-rata Run</th>
+            <th>Ukuran RLE</th>
+            <th>Aksi</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.row} className={selectedRow === row.row ? "selected-row" : ""}>
+              <td>{row.row}</td>
+              <td>{number(row.pixelCount)}</td>
+              <td>{number(row.runCount)}</td>
+              <td>{number(row.longestRun)}</td>
+              <td>{decimal(row.averageRun, 3)}</td>
+              <td>{bits(row.sizeBits)}</td>
+              <td><button type="button" className="secondary compact-button" onClick={() => onSelect(row.row)}>Pilih Baris</button></td>
             </tr>
           ))}
         </tbody>
@@ -1254,26 +1476,42 @@ function PerMethodConclusions({ result }) {
 }
 
 function TheoreticalEvaluation({ result }) {
+  const rows = [
+    ["Baseline", `grayscale resolusi kerja ${result.working.width} x ${result.working.height}`, `kode kuantisasi resolusi kerja ${result.working.width} x ${result.working.height}`, `kode kuantisasi resolusi kerja ${result.working.width} x ${result.working.height}`],
+    ["Ukuran input algoritmik", bits(result.quantInputBits), bits(result.compression.sourceRawBits), bits(result.compression.sourceRawBits)],
+    ["Ukuran hasil", bits(result.quantization.theoreticalBits), bits(result.rle.theoreticalBits), bits(result.huffman.payloadBits)],
+    ["Compression Ratio", decimal(result.quantMetrics.cr, 4), decimal(result.rle.metrics.cr, 4), decimal(result.huffman.metrics.cr, 4)],
+    ["Space Saving", percent(result.quantMetrics.ss), percent(result.rle.metrics.ss), percent(result.huffman.metrics.ss)],
+    ["Waktu encode", milliseconds(result.quantTiming.quantizationMs), milliseconds(result.rle.timing.encodeMs), milliseconds(result.huffman.timing.encodeMs)],
+    ["Waktu decode", "-", milliseconds(result.rle.timing.decodeMs), milliseconds(result.huffman.timing.decodeMs)],
+    ["Waktu rekonstruksi", milliseconds(result.quantTiming.reconstructionMs), milliseconds(result.rle.timing.reconstructionMs), milliseconds(result.huffman.timing.reconstructionMs)],
+    ["Total waktu", milliseconds(result.quantTiming.totalMs), milliseconds(result.rle.timing.totalMs), milliseconds(result.huffman.timing.totalMs)],
+    ["Reconstruction MSE", decimal(result.quantReconstructionQuality.mse, 6), decimal(result.rle.reconstructionQuality.mse, 6), decimal(result.huffman.reconstructionQuality.mse, 6)],
+    ["Reconstruction PSNR", psnrLabel(result.quantReconstructionQuality.psnr), psnrLabel(result.rle.reconstructionQuality.psnr), psnrLabel(result.huffman.reconstructionQuality.psnr)],
+    ["Round-trip MSE", "-", decimal(result.rle.roundTripValidation.mse, 6), decimal(result.huffman.roundTripValidation.mse, 6)],
+    ["Round-trip PSNR", "-", psnrLabel(result.rle.roundTripValidation.psnr), psnrLabel(result.huffman.roundTripValidation.psnr)],
+    ["Status validasi", "-", result.rle.roundTripValidation.isByteIdentical ? "Valid" : "Tidak valid", result.huffman.roundTripValidation.isByteIdentical ? "Valid" : "Tidak valid"],
+  ];
   return (
     <div className="mini-table-wrap">
       <table className="mini-table">
         <thead>
           <tr>
-            <th>Metode</th>
-            <th>Ukuran Awal</th>
-            <th>Ukuran Kompresi</th>
-            <th>Compression Ratio</th>
-            <th>Space Saving</th>
-            <th>MSE</th>
-            <th>PSNR</th>
+            <th>Metrik</th>
+            <th>Kuantisasi</th>
+            <th>RLE</th>
+            <th>Huffman</th>
           </tr>
         </thead>
         <tbody>
-          <tr><td>Kuantisasi</td><td>{bits(result.quantInputBits)}</td><td>{bits(result.quantization.theoreticalBits)}</td><td>{fixed(result.quantMetrics.cr)}</td><td>{fixed(result.quantMetrics.ss)}%</td><td>{fixed(result.quantMetrics.mse)}</td><td>{psnr(result.quantMetrics.psnr)} dB</td></tr>
-          <tr><td>RLE</td><td>{bits(result.compression.sourceRawBits)}</td><td>{bits(result.rle.theoreticalBits)}</td><td>{fixed(result.rle.metrics.cr)}</td><td>{fixed(result.rle.metrics.ss)}%</td><td>{fixed(result.rle.codeMetrics.mse)}</td><td>{psnr(result.rle.codeMetrics.psnr)} dB</td></tr>
-          <tr><td>Huffman</td><td>{bits(result.compression.sourceRawBits)}</td><td>{bits(result.huffman.payloadBits)}</td><td>{fixed(result.huffman.metrics.cr)}</td><td>{fixed(result.huffman.metrics.ss)}%</td><td>{fixed(result.huffman.codeMetrics.mse)}</td><td>{psnr(result.huffman.codeMetrics.psnr)} dB</td></tr>
+          {rows.map((row) => (
+            <tr key={row[0]}>
+              {row.map((cell, index) => <td key={`${row[0]}-${index}`}>{cell}</td>)}
+            </tr>
+          ))}
         </tbody>
       </table>
+      <p className="table-note">Waktu proses diukur pada browser dan perangkat yang digunakan. Hasil dapat berbeda pada perangkat lain.</p>
     </div>
   );
 }
@@ -1329,6 +1567,90 @@ function ActualEvaluation({ result }) {
   );
 }
 
+function EvaluationMetricBlocks({ result }) {
+  const qualityRows = [
+    ["Kuantisasi", result.quantReconstructionQuality.mse, result.quantReconstructionQuality.psnr, "Dampak langsung penurunan level grayscale."],
+    ["RLE reconstruction", result.rle.reconstructionQuality.mse, result.rle.reconstructionQuality.psnr, "Seharusnya sama dengan kuantisasi jika decode RLE benar."],
+    ["Huffman reconstruction", result.huffman.reconstructionQuality.mse, result.huffman.reconstructionQuality.psnr, "Seharusnya sama dengan kuantisasi jika decode Huffman benar."],
+  ];
+  const validationRows = [
+    ["RLE", result.rle.roundTripValidation],
+    ["Huffman", result.huffman.roundTripValidation],
+  ];
+  return (
+    <div className="evaluation-blocks">
+      <article className="analysis-card full-width">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">Kualitas Rekonstruksi</p>
+            <h2>Original Grayscale vs Citra Rekonstruksi</h2>
+          </div>
+        </div>
+        <p className="table-note">Menilai kemiripan citra hasil dekompresi terhadap citra grayscale asli. Nilai ini memperlihatkan dampak kuantisasi terhadap kualitas citra.</p>
+        <div className="mini-table-wrap">
+          <table className="mini-table">
+            <thead>
+              <tr>
+                <th>Metode</th>
+                <th>Reconstruction MSE</th>
+                <th>Reconstruction PSNR</th>
+                <th>Interpretasi kualitas</th>
+              </tr>
+            </thead>
+            <tbody>
+              {qualityRows.map(([methodName, mseValue, psnrValue, note]) => (
+                <tr key={methodName}>
+                  <td>{methodName}</td>
+                  <td>{decimal(mseValue, 6)}</td>
+                  <td>{psnrLabel(psnrValue)}</td>
+                  <td>{note}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </article>
+      <article className="analysis-card full-width">
+        <div className="section-heading compact">
+          <div>
+            <p className="eyebrow">Validasi Lossless / Round-trip</p>
+            <h2>Kode Kuantisasi vs Kode Hasil Decode</h2>
+          </div>
+        </div>
+        <p className="table-note">Memastikan RLE dan Huffman mengembalikan kode kuantisasi tanpa perubahan satu piksel pun.</p>
+        <div className="mini-table-wrap">
+          <table className="mini-table">
+            <thead>
+              <tr>
+                <th>Metode</th>
+                <th>Round-trip MSE</th>
+                <th>Round-trip PSNR</th>
+                <th>Piksel berbeda</th>
+                <th>Max Absolute Difference</th>
+                <th>Checksum</th>
+                <th>Status identik</th>
+              </tr>
+            </thead>
+            <tbody>
+              {validationRows.map(([methodName, validation]) => (
+                <tr key={methodName}>
+                  <td>{methodName}</td>
+                  <td>{decimal(validation.mse, 6)}</td>
+                  <td>{psnrLabel(validation.psnr)}</td>
+                  <td>{number(validation.differentPixelCount)}</td>
+                  <td>{number(validation.maxAbsoluteDifference)}</td>
+                  <td>{validation.checksumBefore} -&gt; {validation.checksumAfter}</td>
+                  <td>{validation.status}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </div>
+  );
+}
+
 function filterRows(rows, query, keys) {
   const needle = query.trim().toLowerCase();
   if (!needle) return rows;
@@ -1343,6 +1665,41 @@ function differenceCount(a, b) {
     if (a[i] !== b[i]) count += 1;
   }
   return count;
+}
+
+function maxAbsoluteDifference(a, b) {
+  if (!a || !b) return 0;
+  const length = Math.min(a.length, b.length);
+  let max = 0;
+  for (let i = 0; i < length; i += 1) {
+    max = Math.max(max, Math.abs(a[i] - b[i]));
+  }
+  return max;
+}
+
+function buildReconstructionQualityMetrics(originalGrayscale, reconstructedGrayscale) {
+  const metrics = computeMetrics(originalGrayscale, reconstructedGrayscale, originalGrayscale.length * 8, reconstructedGrayscale.length * 8);
+  return {
+    mse: metrics.mse,
+    psnr: metrics.psnr,
+    isIdenticalToOriginalGrayscale: metrics.mse === 0,
+  };
+}
+
+function buildRoundTripValidationMetrics(beforeCodes, afterCodes, checksumBefore) {
+  const metrics = computeMetrics(beforeCodes, afterCodes, beforeCodes.length * 8, afterCodes.length * 8);
+  const differentPixelCount = differenceCount(beforeCodes, afterCodes);
+  const checksumAfter = dataChecksum(afterCodes);
+  return {
+    mse: metrics.mse,
+    psnr: metrics.psnr,
+    differentPixelCount,
+    maxAbsoluteDifference: maxAbsoluteDifference(beforeCodes, afterCodes),
+    checksumBefore,
+    checksumAfter,
+    isByteIdentical: arraysEqual(beforeCodes, afterCodes),
+    status: differentPixelCount === 0 ? "Valid - data decoding identik dengan data kuantisasi" : `Tidak valid - ditemukan ${differentPixelCount} piksel berbeda`,
+  };
 }
 
 function buildAutoConclusion(result, mode) {
@@ -1371,9 +1728,9 @@ function buildMethodConclusions(result) {
   const rleLargerThanQuant = result.rle.theoreticalBits > result.quantization.theoreticalBits;
   const huffmanLowSaving = result.huffman.metrics.ss < 5;
   const best = result.rle.metrics.cr >= result.huffman.metrics.cr ? "RLE" : "Huffman";
-  const qualityText = result.reconstructionMetrics.mse === 0
-    ? "Kualitas rekonstruksi identik pada ukuran grayscale yang diuji karena MSE bernilai 0 dan PSNR Infinity."
-    : `Kualitas rekonstruksi dipengaruhi kuantisasi dengan MSE ${fixed(result.reconstructionMetrics.mse)} dan PSNR ${psnr(result.reconstructionMetrics.psnr)} dB.`;
+  const qualityText = result.quantReconstructionQuality.mse === 0
+    ? "Kualitas rekonstruksi identik pada ukuran grayscale yang diuji karena Reconstruction MSE bernilai 0 dan Reconstruction PSNR Inf."
+    : `Kualitas rekonstruksi dipengaruhi kuantisasi dengan Reconstruction MSE ${fixed(result.quantReconstructionQuality.mse)} dan Reconstruction PSNR ${psnrLabel(result.quantReconstructionQuality.psnr)}.`;
   return [
     {
       title: "Kuantisasi",
@@ -1422,49 +1779,82 @@ function buildDatasetRecap(items) {
 }
 
 function buildInvalidMultiLevelRow(no, item, levelValue) {
+  const resolution = item.decoded?.resolutionInfo;
   return {
     No: no,
     "Image Name": item.fileInfo.name,
     Format: datasetFormatKey(item.fileInfo.format),
+    "Resolusi Sumber": resolution ? `${resolution.sourceWidth} x ${resolution.sourceHeight}` : "-",
+    "Resolusi Kerja": resolution ? `${resolution.workingWidth} x ${resolution.workingHeight}` : "-",
     "Quantization Level": levelValue,
+    "Bit per Piksel": "-",
     "Original Size": "-",
     "Quantized Size": "-",
     "RLE Size": "-",
     "Huffman Size": "-",
+    "Compression Ratio RLE": "-",
+    "Compression Ratio Huffman": "-",
+    "Space Saving RLE": "-",
+    "Space Saving Huffman": "-",
+    "Reconstruction MSE Kuantisasi": "-",
+    "Reconstruction PSNR Kuantisasi": "-",
+    "Reconstruction MSE RLE": "-",
+    "Reconstruction PSNR RLE": "-",
+    "Reconstruction MSE Huffman": "-",
+    "Reconstruction PSNR Huffman": "-",
+    "Round-trip MSE RLE": "-",
+    "Round-trip PSNR RLE": "-",
+    "Round-trip MSE Huffman": "-",
+    "Round-trip PSNR Huffman": "-",
+    "Waktu Kuantisasi": "-",
+    "Waktu RLE Encode": "-",
+    "Waktu RLE Decode": "-",
+    "Waktu Huffman Encode": "-",
+    "Waktu Huffman Decode": "-",
+    "Total Waktu RLE": "-",
+    "Total Waktu Huffman": "-",
     "Best Method": "-",
-    "Compression Ratio": "-",
-    "Space Saving": "-",
-    MSE: "-",
-    PSNR: "-",
-    "Compression Time": "-",
-    "Decompression Time": "-",
     Status: `Tidak valid: level ${levelValue} tidak lebih kecil dari level sumber ${item.sourceProfile.estimatedLevel}`,
   };
 }
 
 function buildMultiLevelRow(no, item, levelValue, result) {
   const bestMethod = result.rle.metrics.cr >= result.huffman.metrics.cr ? "RLE" : "Huffman";
-  const bestMetrics = bestMethod === "RLE" ? result.rle.metrics : result.huffman.metrics;
-  const bestMse = bestMethod === "RLE" ? result.rle.reconstructionMetrics.mse : result.huffman.reconstructionMetrics.mse;
-  const bestPsnr = bestMethod === "RLE" ? result.rle.reconstructionMetrics.psnr : result.huffman.reconstructionMetrics.psnr;
-  const compressionTime = bestMethod === "RLE" ? result.rle.encodeMs : result.huffman.encodeMs;
-  const decompressionTime = bestMethod === "RLE" ? result.rle.decodeMs : result.huffman.decodeMs;
+  const resolution = result.resolutionInfo;
   return {
     No: no,
     "Image Name": item.fileInfo.name,
     Format: datasetFormatKey(item.fileInfo.format),
+    "Resolusi Sumber": `${resolution.sourceWidth} x ${resolution.sourceHeight}`,
+    "Resolusi Kerja": `${resolution.workingWidth} x ${resolution.workingHeight}`,
     "Quantization Level": levelValue,
+    "Bit per Piksel": result.quantization.quantizedBitDepth,
     "Original Size": bits(result.quantInputBits),
     "Quantized Size": bits(result.quantization.theoreticalBits),
     "RLE Size": bits(result.rle.theoreticalBits),
     "Huffman Size": bits(result.huffman.payloadBits),
+    "Compression Ratio RLE": decimal(result.rle.metrics.cr, 4),
+    "Compression Ratio Huffman": decimal(result.huffman.metrics.cr, 4),
+    "Space Saving RLE": percent(result.rle.metrics.ss),
+    "Space Saving Huffman": percent(result.huffman.metrics.ss),
+    "Reconstruction MSE Kuantisasi": decimal(result.quantReconstructionQuality.mse, 6),
+    "Reconstruction PSNR Kuantisasi": psnrLabel(result.quantReconstructionQuality.psnr),
+    "Reconstruction MSE RLE": decimal(result.rle.reconstructionQuality.mse, 6),
+    "Reconstruction PSNR RLE": psnrLabel(result.rle.reconstructionQuality.psnr),
+    "Reconstruction MSE Huffman": decimal(result.huffman.reconstructionQuality.mse, 6),
+    "Reconstruction PSNR Huffman": psnrLabel(result.huffman.reconstructionQuality.psnr),
+    "Round-trip MSE RLE": decimal(result.rle.roundTripValidation.mse, 6),
+    "Round-trip PSNR RLE": psnrLabel(result.rle.roundTripValidation.psnr),
+    "Round-trip MSE Huffman": decimal(result.huffman.roundTripValidation.mse, 6),
+    "Round-trip PSNR Huffman": psnrLabel(result.huffman.roundTripValidation.psnr),
+    "Waktu Kuantisasi": milliseconds(result.quantTiming.quantizationMs),
+    "Waktu RLE Encode": milliseconds(result.rle.timing.encodeMs),
+    "Waktu RLE Decode": milliseconds(result.rle.timing.decodeMs),
+    "Waktu Huffman Encode": milliseconds(result.huffman.timing.encodeMs),
+    "Waktu Huffman Decode": milliseconds(result.huffman.timing.decodeMs),
+    "Total Waktu RLE": milliseconds(result.rle.timing.totalMs),
+    "Total Waktu Huffman": milliseconds(result.huffman.timing.totalMs),
     "Best Method": bestMethod,
-    "Compression Ratio": fixed(bestMetrics.cr),
-    "Space Saving": `${fixed(bestMetrics.ss)}%`,
-    MSE: fixed(bestMse),
-    PSNR: `${psnr(bestPsnr)} dB`,
-    "Compression Time": seconds(compressionTime),
-    "Decompression Time": seconds(decompressionTime),
     Status: result.rle.identical && result.huffman.identical ? "Valid" : "Perlu cek decode",
   };
 }
@@ -1478,12 +1868,87 @@ function columnsForAnalysisView(view) {
     "Level Kuantisasi",
     "Ukuran Data Mentah",
     "Ukuran Kompresi",
+    "Waktu Encode",
+    "Waktu Decode",
+    "Waktu Total",
     "Compression Ratio",
     "Space Saving (%)",
-    "MSE",
-    "PSNR",
+    "Reconstruction MSE",
+    "Reconstruction PSNR",
+    "Round-trip MSE",
+    "Round-trip PSNR",
+    "Status Validasi",
     "Analisis",
   ];
+}
+
+function multiLevelColumnsFor(tab) {
+  if (tab === "Kualitas Citra") {
+    return [
+      "Quantization Level",
+      "Reconstruction MSE Kuantisasi",
+      "Reconstruction PSNR Kuantisasi",
+      "Reconstruction MSE RLE",
+      "Reconstruction PSNR RLE",
+      "Reconstruction MSE Huffman",
+      "Reconstruction PSNR Huffman",
+      "Status",
+    ];
+  }
+  if (tab === "Performa") {
+    return [
+      "Quantization Level",
+      "Waktu Kuantisasi",
+      "Waktu RLE Encode",
+      "Waktu RLE Decode",
+      "Waktu Huffman Encode",
+      "Waktu Huffman Decode",
+      "Total Waktu RLE",
+      "Total Waktu Huffman",
+      "Best Method",
+    ];
+  }
+  return [
+    "Quantization Level",
+    "Bit per Piksel",
+    "Quantized Size",
+    "RLE Size",
+    "Huffman Size",
+    "Compression Ratio RLE",
+    "Compression Ratio Huffman",
+    "Space Saving RLE",
+    "Space Saving Huffman",
+    "Best Method",
+    "Status",
+  ];
+}
+
+function groupRowsByImage(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const key = `${row["Image Name"]}-${row.Format}-${row["Resolusi Kerja"]}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  }
+  return [...groups.entries()].map(([key, groupRows]) => ({ key, rows: groupRows }));
+}
+
+function metricTooltip(column) {
+  const hints = {
+    "Quantization Level": "Jumlah level grayscale target yang diuji.",
+    "Bit per Piksel": "ceil(log2(level)) untuk kode kuantisasi.",
+    "Quantized Size": "Ukuran teoritis hasil kuantisasi pada resolusi kerja.",
+    "RLE Size": "Ukuran teoritis payload RLE.",
+    "Huffman Size": "Ukuran teoritis payload Huffman.",
+    "Compression Ratio RLE": "Ukuran input algoritmik dibagi ukuran RLE.",
+    "Compression Ratio Huffman": "Ukuran input algoritmik dibagi ukuran Huffman.",
+    "Space Saving RLE": "(1 - RLE/input) x 100%.",
+    "Space Saving Huffman": "(1 - Huffman/input) x 100%.",
+    "Reconstruction MSE RLE": "Grayscale asli resolusi kerja dibanding citra rekonstruksi RLE.",
+    "Round-trip MSE RLE": "Kode kuantisasi sebelum RLE dibanding kode hasil decode RLE.",
+    "Waktu Huffman Encode": "Mencakup frekuensi, tree, codebook, dan payload encoding.",
+  };
+  return hints[column] ?? column;
 }
 
 function datasetFormatKey(format) {
@@ -1493,6 +1958,77 @@ function datasetFormatKey(format) {
   if (value === "BMP") return "BMP";
   if (value === "TIF" || value === "TIFF") return "TIFF";
   return value || "UNKNOWN";
+}
+
+function buildHistogramFromCodes(codes, levelCount) {
+  const histogram = Array(levelCount).fill(0);
+  for (const code of codes) histogram[code] += 1;
+  return histogram;
+}
+
+function findQuantizationGroup(groups, intensity) {
+  return groups.find((group) => intensity >= group.minIntensity && intensity <= group.maxIntensity);
+}
+
+function buildHistogramSummary(histogram, totalPixels) {
+  const values = [];
+  let weighted = 0;
+  let maxFrequency = -1;
+  let mode = 0;
+  histogram.forEach((count, value) => {
+    if (count > 0) {
+      values.push({ value, count });
+      weighted += value * count;
+      if (count > maxFrequency) {
+        maxFrequency = count;
+        mode = value;
+      }
+    }
+  });
+  let cumulative = 0;
+  const medianTarget = totalPixels / 2;
+  let median = values[0]?.value ?? 0;
+  for (const item of values) {
+    cumulative += item.count;
+    if (cumulative >= medianTarget) {
+      median = item.value;
+      break;
+    }
+  }
+  return {
+    min: values[0]?.value ?? "-",
+    max: values[values.length - 1]?.value ?? "-",
+    unique: values.length,
+    total: totalPixels,
+    mean: totalPixels ? weighted / totalPixels : 0,
+    median,
+    mode,
+  };
+}
+
+function buildRleRowSummary(row, rle) {
+  const runCount = row.pairs.length;
+  const pixelCount = row.decodedPixelCount;
+  const longestRun = row.pairs.reduce((max, pair) => Math.max(max, pair.count), 0);
+  return {
+    row: row.rowIndex,
+    pixelCount,
+    runCount,
+    longestRun,
+    averageRun: pixelCount / runCount,
+    sizeBits: runCount * (rle.symbolBitWidth + rle.countBitWidth),
+  };
+}
+
+function sampleRlePairs(pairs) {
+  if (pairs.length <= 20) return pairs;
+  const first = pairs.slice(0, 10);
+  const last = pairs.slice(-10);
+  return [...first, { row: "...", run: "...", value: "...", count: "...", isSeparator: true }, ...last];
+}
+
+function formatPairBinary(value, width) {
+  return Number.isInteger(value) ? value.toString(2).padStart(width, "0") : "-";
 }
 
 function yieldToBrowser() {
@@ -1515,8 +2051,11 @@ function MetricList({ items }) {
 function HuffmanTreeSvg({ root, entries = [], fileName = "huffman_tree" }) {
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [treeMode, setTreeMode] = useState("Full Huffman Tree");
+  const [treeMode, setTreeMode] = useState("Mode Sederhana");
+  const [searchSymbol, setSearchSymbol] = useState("");
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const svgRef = useRef(null);
+  const entryMap = new Map(entries.map((entry) => [entry.symbol, entry]));
   const nodes = [];
   const edges = [];
   const leaves = [];
@@ -1541,8 +2080,17 @@ function HuffmanTreeSvg({ root, entries = [], fileName = "huffman_tree" }) {
       if (left) edges.push({ from: { x, y }, to: left, label: "0" });
       if (right) edges.push({ from: { x, y }, to: right, label: "1" });
     }
-    const symbols = collectTreeSymbols(node).join(",");
-    nodes.push({ x, y, label: node.symbol === null ? `{${symbols}}` : `${node.symbol}`, frequency: node.frequency, leaf: node.symbol !== null });
+    const symbols = collectTreeSymbols(node);
+    const entry = entryMap.get(node.symbol);
+    nodes.push({
+      x,
+      y,
+      label: node.symbol === null ? `f=${number(node.frequency)}` : `Simbol ${node.symbol}`,
+      detailLabel: node.symbol === null ? `${symbols.length} simbol` : `Kode ${entry?.code ?? "-"}`,
+      frequency: node.frequency,
+      leaf: node.symbol !== null,
+      symbols,
+    });
     return { x, y };
   };
   place(root, 0);
@@ -1554,6 +2102,10 @@ function HuffmanTreeSvg({ root, entries = [], fileName = "huffman_tree" }) {
   };
   const fit = () => {
     setZoom(Math.max(0.45, Math.min(1.2, 1040 / width)));
+    setPan({ x: 0, y: 0 });
+  };
+  const centerRoot = () => {
+    setZoom(1);
     setPan({ x: 0, y: 0 });
   };
   const exportSvg = () => {
@@ -1581,12 +2133,17 @@ function HuffmanTreeSvg({ root, entries = [], fileName = "huffman_tree" }) {
     image.src = url;
   };
   const topEntries = entries.filter((entry) => entry.frequency > 0).sort((a, b) => b.frequency - a.frequency).slice(0, 16);
+  const requestedSymbol = searchSymbol.trim() === "" ? null : Number(searchSymbol);
   return (
-    <div className="tree-wrap">
+    <div className={`tree-wrap ${isFullscreen ? "fullscreen" : ""}`}>
       <div className="tree-controls" aria-label="Kontrol pohon Huffman">
-        {["Full Huffman Tree", "Simplified Tree / Top Symbols View"].map((mode) => (
+        {["Mode Sederhana", "Mode Detail"].map((mode) => (
           <button key={mode} type="button" className={treeMode === mode ? "tab-button active" : "secondary"} onClick={() => setTreeMode(mode)}>{mode}</button>
         ))}
+        <label className="tree-search">
+          <span>Cari simbol</span>
+          <input type="number" min="0" max="255" value={searchSymbol} onChange={(event) => setSearchSymbol(event.target.value)} placeholder="contoh 12" />
+        </label>
         <button type="button" className="secondary" onClick={() => setZoom((value) => Math.min(2.6, value + 0.15))}>Zoom In</button>
         <button type="button" className="secondary" onClick={() => setZoom((value) => Math.max(0.35, value - 0.15))}>Zoom Out</button>
         <button type="button" className="secondary" onClick={() => setPan((value) => ({ ...value, x: value.x - 60 }))}>Geser Kiri</button>
@@ -1594,11 +2151,13 @@ function HuffmanTreeSvg({ root, entries = [], fileName = "huffman_tree" }) {
         <button type="button" className="secondary" onClick={() => setPan((value) => ({ ...value, y: value.y - 60 }))}>Geser Atas</button>
         <button type="button" className="secondary" onClick={() => setPan((value) => ({ ...value, y: value.y + 60 }))}>Geser Bawah</button>
         <button type="button" className="secondary" onClick={fit}>Fit to Screen</button>
+        <button type="button" className="secondary" onClick={centerRoot}>Center Root</button>
+        <button type="button" className="secondary" onClick={() => setIsFullscreen((value) => !value)}>{isFullscreen ? "Keluar Fullscreen" : "Expand Fullscreen"}</button>
         <button type="button" className="secondary" onClick={reset}>Reset</button>
         <button type="button" className="secondary" onClick={exportSvg}>Export SVG</button>
         <button type="button" className="secondary" onClick={exportPng}>Export PNG</button>
       </div>
-      {treeMode === "Simplified Tree / Top Symbols View" ? (
+      {treeMode === "Mode Sederhana" ? (
         <div className="top-symbols">
           {topEntries.map((entry) => (
             <article key={entry.symbol}>
@@ -1609,7 +2168,10 @@ function HuffmanTreeSvg({ root, entries = [], fileName = "huffman_tree" }) {
           ))}
         </div>
       ) : null}
-      <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Visualisasi pohon Huffman dengan edge 0 dan 1" className={treeMode === "Full Huffman Tree" ? "" : "visually-soft"}>
+      <p className="tree-legend">
+        Mode sederhana menampilkan node sebagai frekuensi dan daun sebagai simbol. Mode detail tetap tersedia untuk menelusuri penempatan kode 0/1 dari akar ke daun.
+      </p>
+      <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Visualisasi pohon Huffman dengan edge 0 dan 1" className={treeMode === "Mode Detail" ? "" : "visually-soft"}>
         <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
           {edges.map((edge, index) => (
             <g key={index}>
@@ -1618,10 +2180,10 @@ function HuffmanTreeSvg({ root, entries = [], fileName = "huffman_tree" }) {
             </g>
           ))}
           {nodes.map((node, index) => (
-            <g key={index}>
-              <circle cx={node.x} cy={node.y} r="22" className={node.leaf ? "leaf" : ""} />
-              <text x={node.x} y={node.y - 3}>{node.label}</text>
-              <text x={node.x} y={node.y + 13}>{node.frequency}</text>
+            <g key={index} className={requestedSymbol !== null && node.symbols.includes(requestedSymbol) ? "matched" : ""}>
+              <rect x={node.x - 48} y={node.y - 24} width="96" height="48" rx="8" className={node.leaf ? "leaf" : ""} />
+              <text x={node.x} y={node.y - 4}>{treeMode === "Mode Detail" ? node.detailLabel : node.label}</text>
+              <text x={node.x} y={node.y + 13}>{treeMode === "Mode Detail" ? `f=${number(node.frequency)}` : symbolListLabel(node.symbols)}</text>
             </g>
           ))}
         </g>
@@ -1640,22 +2202,28 @@ function collectTreeSymbols(node) {
   return [...(node.left ? collectTreeSymbols(node.left) : []), ...(node.right ? collectTreeSymbols(node.right) : [])].sort((a, b) => a - b);
 }
 
+function symbolListLabel(symbols) {
+  if (symbols.length === 1) return `s=${symbols[0]}`;
+  if (symbols.length <= 4) return `{${symbols.join(",")}}`;
+  return `{${symbols.slice(0, 2).join(",")} ... ${symbols.slice(-1)[0]}}`;
+}
+
 function compactIntensities(values) {
   if (values.length <= 12) return values.join(", ");
   return `${values.slice(0, 6).join(", ")} ... ${values.slice(-4).join(", ")}`;
 }
 
-async function decodeImageFile(file) {
+async function decodeImageFile(file, processingMode = "optimized") {
   const extension = extensionOf(file.name).toLowerCase();
   if (extension === "tif" || extension === "tiff") {
-    return decodeTiff(file);
+    return decodeTiff(file, processingMode);
   }
-  return decodeBrowserImage(file);
+  return decodeBrowserImage(file, processingMode);
 }
 
-async function decodeBrowserImage(file) {
+async function decodeBrowserImage(file, processingMode = "optimized") {
   const bitmap = await createImageBitmap(file);
-  const resized = resizeBox(bitmap.width, bitmap.height, MAX_PIXELS);
+  const resized = resizeBox(bitmap.width, bitmap.height, MAX_PIXELS, processingMode);
   const canvas = document.createElement("canvas");
   canvas.width = resized.width;
   canvas.height = resized.height;
@@ -1675,11 +2243,12 @@ async function decodeBrowserImage(file) {
     originalHeight: bitmap.height,
     channels: 4,
     wasResized: resized.wasResized,
+    resolutionInfo: buildResolutionInfo(bitmap.width, bitmap.height, resized, processingMode),
     previewUrl: previewCanvas.toDataURL("image/png"),
   };
 }
 
-async function decodeTiff(file) {
+async function decodeTiff(file, processingMode = "optimized") {
   const mod = await import("utif");
   const UTIF = mod.default ?? mod;
   const buffer = await file.arrayBuffer();
@@ -1693,7 +2262,7 @@ async function decodeTiff(file) {
   const sourceCtx = sourceCanvas.getContext("2d");
   sourceCtx.putImageData(new ImageData(new Uint8ClampedArray(rgba), ifds[0].width, ifds[0].height), 0, 0);
 
-  const resized = resizeBox(ifds[0].width, ifds[0].height, MAX_PIXELS);
+  const resized = resizeBox(ifds[0].width, ifds[0].height, MAX_PIXELS, processingMode);
   const workCanvas = document.createElement("canvas");
   workCanvas.width = resized.width;
   workCanvas.height = resized.height;
@@ -1707,6 +2276,7 @@ async function decodeTiff(file) {
     originalHeight: ifds[0].height,
     channels: 4,
     wasResized: resized.wasResized,
+    resolutionInfo: buildResolutionInfo(ifds[0].width, ifds[0].height, resized, processingMode),
     previewUrl: sourceCanvas.toDataURL("image/png"),
   };
 }
@@ -1721,11 +2291,14 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
     throw new Error(`Level kuantisasi ${level} tidak valid. Citra sumber terdeteksi sekitar ${detectedProfile.estimatedLevel} level, sehingga kuantisasi harus memilih level yang lebih kecil.`);
   }
 
+  const quantStart = performance.now();
   const quantization = quantizeEqualPopulation(gray, level, detectedProfile.estimatedLevel);
+  const quantMs = performance.now() - quantStart;
   const quantizedCodes = quantization.codes;
   const sourceRawBits = quantizedCodes.length * quantization.quantizedBitDepth;
   const quantInputBits = gray.length * detectedProfile.bitsPerPixel;
   const quantMetrics = computeMetrics(gray, quantization.reconstructed, quantInputBits, quantization.theoreticalBits);
+  const quantReconstructionQuality = buildReconstructionQualityMetrics(gray, quantization.reconstructed);
   const quantizedChecksum = dataChecksum(quantizedCodes);
 
   const rleEncodeStart = performance.now();
@@ -1734,9 +2307,15 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
   const rleDecodeStart = performance.now();
   const rleDecodedCodes = decodeRLEMatrix(rleEncoded);
   const rleDecodeMs = performance.now() - rleDecodeStart;
+  const rleReconstructionStart = performance.now();
   const rleReconstructed = inverseQuantization(rleDecodedCodes, quantization.groups);
+  const rleReconstructionMs = performance.now() - rleReconstructionStart;
+  const rleValidationStart = performance.now();
   const rleCodeMetrics = computeMetrics(quantizedCodes, rleDecodedCodes, sourceRawBits, rleEncoded.theoreticalBits);
   const rleReconstructionMetrics = computeMetrics(gray, rleReconstructed, sourceRawBits, rleEncoded.theoreticalBits);
+  const rleReconstructionQuality = buildReconstructionQualityMetrics(gray, rleReconstructed);
+  const rleRoundTripValidation = buildRoundTripValidationMetrics(quantizedCodes, rleDecodedCodes, quantizedChecksum);
+  const rleValidationMs = performance.now() - rleValidationStart;
   const rleActualBytes = estimateActualBytes({
     format: "RLE",
     width: decoded.width,
@@ -1759,7 +2338,16 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
     roundTripStatus: arraysEqual(quantizedCodes, rleDecodedCodes) ? "OK" : "Gagal",
     codeMetrics: rleCodeMetrics,
     reconstructionMetrics: rleReconstructionMetrics,
+    reconstructionQuality: rleReconstructionQuality,
+    roundTripValidation: rleRoundTripValidation,
     metrics: computeMetrics(quantizedCodes, rleDecodedCodes, sourceRawBits, rleEncoded.theoreticalBits),
+    timing: {
+      encodeMs: rleEncodeMs,
+      decodeMs: rleDecodeMs,
+      reconstructionMs: rleReconstructionMs,
+      validationMs: rleValidationMs,
+      totalMs: rleEncodeMs + rleDecodeMs + rleReconstructionMs + rleValidationMs,
+    },
     actualBytes: rleActualBytes,
   };
 
@@ -1769,9 +2357,15 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
   const huffmanDecodeStart = performance.now();
   const huffmanDecodedCodes = decodeHuffmanCore(huffmanEncoded, quantizedCodes.length);
   const huffmanDecodeMs = performance.now() - huffmanDecodeStart;
+  const huffmanReconstructionStart = performance.now();
   const huffmanReconstructed = inverseQuantization(huffmanDecodedCodes, quantization.groups);
+  const huffmanReconstructionMs = performance.now() - huffmanReconstructionStart;
+  const huffmanValidationStart = performance.now();
   const huffmanCodeMetrics = computeMetrics(quantizedCodes, huffmanDecodedCodes, sourceRawBits, huffmanEncoded.payloadBits);
   const huffmanReconstructionMetrics = computeMetrics(gray, huffmanReconstructed, sourceRawBits, huffmanEncoded.payloadBits);
+  const huffmanReconstructionQuality = buildReconstructionQualityMetrics(gray, huffmanReconstructed);
+  const huffmanRoundTripValidation = buildRoundTripValidationMetrics(quantizedCodes, huffmanDecodedCodes, quantizedChecksum);
+  const huffmanValidationMs = performance.now() - huffmanValidationStart;
   const huffmanActualBytes = estimateActualBytes({
     format: "Huffman",
     width: decoded.width,
@@ -1793,7 +2387,18 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
     roundTripStatus: arraysEqual(quantizedCodes, huffmanDecodedCodes) ? "OK" : "Gagal",
     codeMetrics: huffmanCodeMetrics,
     reconstructionMetrics: huffmanReconstructionMetrics,
+    reconstructionQuality: huffmanReconstructionQuality,
+    roundTripValidation: huffmanRoundTripValidation,
     metrics: computeMetrics(quantizedCodes, huffmanDecodedCodes, sourceRawBits, huffmanEncoded.payloadBits),
+    timing: {
+      frequencyTableMs: null,
+      treeBuildMs: null,
+      encodeMs: huffmanEncodeMs,
+      decodeMs: huffmanDecodeMs,
+      reconstructionMs: huffmanReconstructionMs,
+      validationMs: huffmanValidationMs,
+      totalMs: huffmanEncodeMs + huffmanDecodeMs + huffmanReconstructionMs + huffmanValidationMs,
+    },
     actualBytes: huffmanActualBytes,
   };
 
@@ -1816,6 +2421,7 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
   const context = {
     file,
     decoded,
+    resolutionInfo: decoded.resolutionInfo,
     working: { width: decoded.width, height: decoded.height, pixels: decoded.width * decoded.height, grayMs },
     sourceProfile: detectedProfile,
     gray,
@@ -1827,6 +2433,12 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
     quantizedChecksum,
     maxHistogramCount: Math.max(...quantization.histogram),
     quantization,
+    quantTiming: {
+      quantizationMs: quantMs,
+      reconstructionMs: 0,
+      totalMs: quantMs,
+    },
+    quantReconstructionQuality,
     quantInputBits,
     quantMetrics,
     rle,
@@ -1857,8 +2469,20 @@ function buildRows(ctx, outputMode) {
     Format: ctx.file.format,
     Metode: ctx.compression.method,
   };
+  const emptyMetrics = {
+    "Waktu Total": "-",
+    "Reconstruction MSE": "-",
+    "Reconstruction PSNR": "-",
+    "Round-trip MSE": "-",
+    "Round-trip PSNR": "-",
+    "Piksel Berbeda": "-",
+    "Max Absolute Difference": "-",
+    "Checksum Sebelum": "-",
+    "Checksum Sesudah": "-",
+    "Status Validasi": "-",
+  };
 
-  const push = (stage) => rows.push({ No: no++, ...common, ...stage });
+  const push = (stage) => rows.push({ No: no++, ...common, ...emptyMetrics, ...stage });
   const rawOriginalBits = ctx.decoded.originalWidth * ctx.decoded.originalHeight * 4 * 8;
   push({
     Tahap: "Citra Asli",
@@ -1874,8 +2498,6 @@ function buildRows(ctx, outputMode) {
     "Waktu Decode": "-",
     "Compression Ratio": "1.0000",
     "Space Saving (%)": "0.0000",
-    MSE: "-",
-    PSNR: "-",
     Analisis: "Ukuran file disk dipengaruhi format dan metadata; ukuran mentah dihitung dari piksel RGBA.",
   });
 
@@ -1891,10 +2513,12 @@ function buildRows(ctx, outputMode) {
     "Jumlah Run": "-",
     "Waktu Encode": seconds(ctx.working.grayMs),
     "Waktu Decode": "-",
+    "Waktu Total": seconds(ctx.working.grayMs),
     "Compression Ratio": fixed(rawOriginalBits / (ctx.gray.length * bitsForLevel(ctx.sourceProfile.estimatedLevel))),
     "Space Saving (%)": fixed((1 - (ctx.gray.length * bitsForLevel(ctx.sourceProfile.estimatedLevel)) / rawOriginalBits) * 100),
-    MSE: "0.0000",
-    PSNR: "Inf",
+    "Reconstruction MSE": "0.000000",
+    "Reconstruction PSNR": psnrLabel(Infinity),
+    "Status Validasi": "Baseline grayscale",
     Analisis: `RGB dikonversi menjadi satu kanal intensitas. Terdeteksi ${ctx.sourceProfile.uniqueCount} nilai unik, dipetakan sebagai sumber sekitar ${ctx.sourceProfile.estimatedLevel} level.`,
   });
 
@@ -1910,13 +2534,15 @@ function buildRows(ctx, outputMode) {
       "Nilai Unik": uniqueCount(ctx.quantization.codes),
       "Ukuran Kompresi": bits(ctx.quantization.theoreticalBits),
       "Jumlah Run": "-",
-      "Waktu Encode": "-",
+      "Waktu Encode": seconds(ctx.quantTiming.quantizationMs),
       "Waktu Decode": "-",
+      "Waktu Total": seconds(ctx.quantTiming.totalMs),
       "Compression Ratio": fixed(ctx.quantMetrics.cr),
       "Space Saving (%)": fixed(ctx.quantMetrics.ss),
-      MSE: fixed(ctx.quantMetrics.mse),
-      PSNR: psnr(ctx.quantMetrics.psnr),
-      Analisis: "Level intensitas dikurangi; ukuran teoritis turun tetapi kualitas dapat berubah.",
+      "Reconstruction MSE": fixed(ctx.quantReconstructionQuality.mse, 6),
+      "Reconstruction PSNR": psnrLabel(ctx.quantReconstructionQuality.psnr),
+      "Status Validasi": "Lossy tahap kuantisasi",
+      Analisis: "Level intensitas dikurangi; reconstruction MSE/PSNR membandingkan grayscale asli dengan hasil inverse quantization.",
     });
   }
 
@@ -1933,11 +2559,19 @@ function buildRows(ctx, outputMode) {
       "Jumlah Run": ctx.rle.pairCount,
       "Waktu Encode": seconds(ctx.rle.encodeMs),
       "Waktu Decode": seconds(ctx.rle.decodeMs),
+      "Waktu Total": seconds(ctx.rle.timing.totalMs),
       "Compression Ratio": fixed(ctx.rle.metrics.cr),
       "Space Saving (%)": fixed(ctx.rle.metrics.ss),
-      MSE: fixed(ctx.rle.codeMetrics.mse),
-      PSNR: psnr(ctx.rle.codeMetrics.psnr),
-      Analisis: "RLE diproses per baris dan lossless terhadap matrix kode kuantisasi.",
+      "Reconstruction MSE": fixed(ctx.rle.reconstructionQuality.mse, 6),
+      "Reconstruction PSNR": psnrLabel(ctx.rle.reconstructionQuality.psnr),
+      "Round-trip MSE": fixed(ctx.rle.roundTripValidation.mse, 6),
+      "Round-trip PSNR": psnrLabel(ctx.rle.roundTripValidation.psnr),
+      "Piksel Berbeda": number(ctx.rle.roundTripValidation.differentPixelCount),
+      "Max Absolute Difference": number(ctx.rle.roundTripValidation.maxAbsoluteDifference),
+      "Checksum Sebelum": ctx.rle.roundTripValidation.checksumBefore,
+      "Checksum Sesudah": ctx.rle.roundTripValidation.checksumAfter,
+      "Status Validasi": ctx.rle.roundTripValidation.status,
+      Analisis: "RLE diproses per baris dan lossless terhadap matriks kode kuantisasi; kualitas citra tetap mengikuti hasil kuantisasi.",
     });
   }
 
@@ -1954,14 +2588,25 @@ function buildRows(ctx, outputMode) {
       "Jumlah Run": "-",
       "Waktu Encode": seconds(ctx.huffman.encodeMs),
       "Waktu Decode": seconds(ctx.huffman.decodeMs),
+      "Waktu Total": seconds(ctx.huffman.timing.totalMs),
       "Compression Ratio": fixed(ctx.huffman.metrics.cr),
       "Space Saving (%)": fixed(ctx.huffman.metrics.ss),
-      MSE: fixed(ctx.huffman.codeMetrics.mse),
-      PSNR: psnr(ctx.huffman.codeMetrics.psnr),
-      Analisis: "Huffman dibangun dari frekuensi aktual kode kuantisasi dan lossless terhadap matrix kode.",
+      "Reconstruction MSE": fixed(ctx.huffman.reconstructionQuality.mse, 6),
+      "Reconstruction PSNR": psnrLabel(ctx.huffman.reconstructionQuality.psnr),
+      "Round-trip MSE": fixed(ctx.huffman.roundTripValidation.mse, 6),
+      "Round-trip PSNR": psnrLabel(ctx.huffman.roundTripValidation.psnr),
+      "Piksel Berbeda": number(ctx.huffman.roundTripValidation.differentPixelCount),
+      "Max Absolute Difference": number(ctx.huffman.roundTripValidation.maxAbsoluteDifference),
+      "Checksum Sebelum": ctx.huffman.roundTripValidation.checksumBefore,
+      "Checksum Sesudah": ctx.huffman.roundTripValidation.checksumAfter,
+      "Status Validasi": ctx.huffman.roundTripValidation.status,
+      Analisis: "Huffman dibangun dari frekuensi aktual kode kuantisasi dan lossless terhadap matriks kode.",
     });
   }
 
+  const primaryValidation = ctx.compression.primary === "RLE" ? ctx.rle.roundTripValidation : ctx.huffman.roundTripValidation;
+  const primaryQuality = ctx.compression.primary === "RLE" ? ctx.rle.reconstructionQuality : ctx.huffman.reconstructionQuality;
+  const primaryTiming = ctx.compression.primary === "RLE" ? ctx.rle.timing : ctx.huffman.timing;
   push({
     Tahap: includeFull ? "Dekompresi" : `Citra Dekompresi ${ctx.compression.method}`,
     "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
@@ -1974,10 +2619,18 @@ function buildRows(ctx, outputMode) {
     "Jumlah Run": ctx.rle?.pairCount ?? "-",
     "Waktu Encode": includeFull ? "-" : seconds(ctx.compression.encodeMs),
     "Waktu Decode": seconds(ctx.compression.decodeMs),
+    "Waktu Total": includeFull ? seconds(primaryTiming.decodeMs + primaryTiming.reconstructionMs + primaryTiming.validationMs) : seconds(primaryTiming.totalMs),
     "Compression Ratio": fixed(ctx.finalMetrics.cr),
     "Space Saving (%)": fixed(ctx.finalMetrics.ss),
-    MSE: fixed(ctx.finalMetrics.mse),
-    PSNR: psnr(ctx.finalMetrics.psnr),
+    "Reconstruction MSE": fixed(primaryQuality.mse, 6),
+    "Reconstruction PSNR": psnrLabel(primaryQuality.psnr),
+    "Round-trip MSE": fixed(primaryValidation.mse, 6),
+    "Round-trip PSNR": psnrLabel(primaryValidation.psnr),
+    "Piksel Berbeda": number(primaryValidation.differentPixelCount),
+    "Max Absolute Difference": number(primaryValidation.maxAbsoluteDifference),
+    "Checksum Sebelum": primaryValidation.checksumBefore,
+    "Checksum Sesudah": primaryValidation.checksumAfter,
+    "Status Validasi": primaryValidation.status,
     Analisis: `Data ${ctx.compression.primary} dikembalikan menjadi kode kuantisasi, divalidasi checksum, lalu inverse quantization.`,
   });
 
@@ -1994,10 +2647,18 @@ function buildRows(ctx, outputMode) {
       "Jumlah Run": ctx.rle?.pairCount ?? "-",
       "Waktu Encode": seconds(ctx.compression.encodeMs),
       "Waktu Decode": seconds(ctx.compression.decodeMs),
+      "Waktu Total": seconds((ctx.compression.primary === "RLE" ? ctx.rle.timing.totalMs : ctx.huffman.timing.totalMs)),
       "Compression Ratio": fixed(ctx.finalMetrics.cr),
       "Space Saving (%)": fixed(ctx.finalMetrics.ss),
-      MSE: fixed(ctx.finalMetrics.mse),
-      PSNR: psnr(ctx.finalMetrics.psnr),
+      "Reconstruction MSE": fixed(primaryQuality.mse, 6),
+      "Reconstruction PSNR": psnrLabel(primaryQuality.psnr),
+      "Round-trip MSE": fixed(primaryValidation.mse, 6),
+      "Round-trip PSNR": psnrLabel(primaryValidation.psnr),
+      "Piksel Berbeda": number(primaryValidation.differentPixelCount),
+      "Max Absolute Difference": number(primaryValidation.maxAbsoluteDifference),
+      "Checksum Sebelum": primaryValidation.checksumBefore,
+      "Checksum Sesudah": primaryValidation.checksumAfter,
+      "Status Validasi": primaryValidation.status,
       Analisis: `Ringkasan final memakai metode terpilih ${ctx.compression.primary}; RLE dan Huffman tetap dihitung independen.`,
     });
   }
@@ -2020,6 +2681,10 @@ function buildDetailReport(ctx, outputMode) {
   lines.push(`Metode           : ${ctx.compression.method}`);
   lines.push(`Mode output      : ${outputMode}`);
   lines.push(`Level kuantisasi : ${ctx.compression.sourceLevel}`);
+  lines.push(`Resolusi sumber  : ${ctx.resolutionInfo.sourceWidth} x ${ctx.resolutionInfo.sourceHeight}`);
+  lines.push(`Resolusi kerja   : ${ctx.resolutionInfo.workingWidth} x ${ctx.resolutionInfo.workingHeight}`);
+  lines.push(`Mode resolusi    : ${ctx.resolutionInfo.processingMode === "optimized" ? "Optimasi Browser" : "Resolusi Asli"}`);
+  lines.push(`Catatan resolusi : ${ctx.resolutionInfo.wasResized ? ctx.resolutionInfo.resizeReason : "Citra diproses pada resolusi sumber."}`);
   lines.push("");
   lines.push("A. CITRA DIGITAL DAN UKURAN DATA");
   lines.push("Rumus: Np = M x N");
@@ -2058,8 +2723,9 @@ function buildDetailReport(ctx, outputMode) {
   lines.push(...formatQuantizationGroups(q.groups));
   lines.push(`CR_q = ${ctx.quantInputBits}/${q.theoreticalBits} = ${fixed(qMetrics.cr)}`);
   lines.push(`SS_q = (1 - ${q.theoreticalBits}/${ctx.quantInputBits}) x 100% = ${fixed(qMetrics.ss)}%`);
-  lines.push(`MSE_q = ${fixed(qMetrics.mse)}`);
-  lines.push(`PSNR_q = ${psnr(qMetrics.psnr)} dB`);
+  lines.push(`Reconstruction MSE_q = ${fixed(ctx.quantReconstructionQuality.mse, 6)}`);
+  lines.push(`Reconstruction PSNR_q = ${psnrLabel(ctx.quantReconstructionQuality.psnr)}`);
+  lines.push(`Waktu kuantisasi = ${seconds(ctx.quantTiming.quantizationMs)}`);
   lines.push("");
   lines.push("D. RUN-LENGTH ENCODING (RLE)");
   lines.push("Rumus materi: tiap baris citra diubah menjadi pasangan (p,q).");
@@ -2083,7 +2749,14 @@ function buildDetailReport(ctx, outputMode) {
     lines.push(`r = ${ctx.quantizedCodes.length}/${ctx.rle.pairCount} = ${fixed(ctx.quantizedCodes.length / ctx.rle.pairCount)} piksel/run`);
     lines.push(`Checksum kode asli = ${ctx.quantizedChecksum}`);
     lines.push(`Checksum hasil decode RLE = ${ctx.rle.decodedChecksum}`);
-    lines.push(`Round-trip RLE = ${ctx.rle.roundTripStatus}`);
+    lines.push(`Round-trip MSE_RLE = ${fixed(ctx.rle.roundTripValidation.mse, 6)}`);
+    lines.push(`Round-trip PSNR_RLE = ${psnrLabel(ctx.rle.roundTripValidation.psnr)}`);
+    lines.push(`Reconstruction MSE_RLE = ${fixed(ctx.rle.reconstructionQuality.mse, 6)}`);
+    lines.push(`Reconstruction PSNR_RLE = ${psnrLabel(ctx.rle.reconstructionQuality.psnr)}`);
+    lines.push(`Round-trip RLE = ${ctx.rle.roundTripValidation.status}`);
+    lines.push(`Waktu encode RLE = ${seconds(ctx.rle.timing.encodeMs)}`);
+    lines.push(`Waktu decode RLE = ${seconds(ctx.rle.timing.decodeMs)}`);
+    lines.push(`Total waktu RLE = ${seconds(ctx.rle.timing.totalMs)}`);
     lines.push("Contoh pasangan (p,q) awal sesuai urutan baris:");
     lines.push(...formatRlePairs(ctx.rle));
   } else {
@@ -2121,7 +2794,14 @@ function buildDetailReport(ctx, outputMode) {
     lines.push(`SS_H = (1 - ${ctx.huffman.payloadBits}/${huffmanInputBits}) x 100% = ${fixed((1 - ctx.huffman.payloadBits / huffmanInputBits) * 100)}%`);
     lines.push(`Checksum kode asli = ${ctx.quantizedChecksum}`);
     lines.push(`Checksum hasil decode Huffman = ${ctx.huffman.decodedChecksum}`);
-    lines.push(`Round-trip Huffman = ${ctx.huffman.roundTripStatus}`);
+    lines.push(`Round-trip MSE_H = ${fixed(ctx.huffman.roundTripValidation.mse, 6)}`);
+    lines.push(`Round-trip PSNR_H = ${psnrLabel(ctx.huffman.roundTripValidation.psnr)}`);
+    lines.push(`Reconstruction MSE_H = ${fixed(ctx.huffman.reconstructionQuality.mse, 6)}`);
+    lines.push(`Reconstruction PSNR_H = ${psnrLabel(ctx.huffman.reconstructionQuality.psnr)}`);
+    lines.push(`Round-trip Huffman = ${ctx.huffman.roundTripValidation.status}`);
+    lines.push(`Waktu encode Huffman = ${seconds(ctx.huffman.timing.encodeMs)}`);
+    lines.push(`Waktu decode Huffman = ${seconds(ctx.huffman.timing.decodeMs)}`);
+    lines.push(`Total waktu Huffman = ${seconds(ctx.huffman.timing.totalMs)}`);
   } else {
     lines.push("Huffman tidak dijalankan pada metode ini.");
   }
@@ -2136,8 +2816,8 @@ function buildDetailReport(ctx, outputMode) {
   lines.push(`S_kompresi final = ${ctx.compression.compressedBits} bit`);
   lines.push(`CR = ${ctx.compression.sourceRawBits}/${ctx.compression.compressedBits} = ${fixed(final.cr)}`);
   lines.push(`SS = (1 - ${ctx.compression.compressedBits}/${ctx.compression.sourceRawBits}) x 100% = ${fixed(final.ss)}%`);
-  lines.push(`MSE = ${fixed(final.mse)}`);
-  lines.push(`PSNR = ${psnr(final.psnr)} dB`);
+  lines.push(`Reconstruction MSE final = ${fixed(final.mse, 6)}`);
+  lines.push(`Reconstruction PSNR final = ${psnrLabel(final.psnr)}`);
   lines.push(`Waktu encode = ${seconds(ctx.compression.encodeMs)}`);
   lines.push(`Waktu decode = ${seconds(ctx.compression.decodeMs)}`);
   lines.push("");
@@ -2456,14 +3136,34 @@ function unflattenPairs(flat) {
   return pairs;
 }
 
-function resizeBox(width, height, maxPixels) {
+function resizeBox(width, height, maxPixels, processingMode = "optimized") {
+  if (processingMode === "original") {
+    return { width, height, wasResized: false, scale: 1, resizeReason: null };
+  }
   const pixels = width * height;
-  if (pixels <= maxPixels) return { width, height, wasResized: false };
+  if (pixels <= maxPixels) return { width, height, wasResized: false, scale: 1, resizeReason: null };
   const scale = Math.sqrt(maxPixels / pixels);
   return {
     width: Math.max(1, Math.round(width * scale)),
     height: Math.max(1, Math.round(height * scale)),
     wasResized: true,
+    scale,
+    resizeReason: `Jumlah piksel sumber ${number(pixels)} melebihi batas kerja ${number(maxPixels)} piksel.`,
+  };
+}
+
+function buildResolutionInfo(sourceWidth, sourceHeight, resized, processingMode) {
+  return {
+    sourceWidth,
+    sourceHeight,
+    sourcePixelCount: sourceWidth * sourceHeight,
+    workingWidth: resized.width,
+    workingHeight: resized.height,
+    workingPixelCount: resized.width * resized.height,
+    wasResized: resized.wasResized,
+    resizeScale: resized.scale ?? resized.width / sourceWidth,
+    resizeReason: resized.resizeReason,
+    processingMode: processingMode === "original" ? "original" : "optimized",
   };
 }
 
@@ -2501,12 +3201,32 @@ function psnr(value) {
   return Number.isFinite(value) ? value.toFixed(4) : "Inf";
 }
 
+function psnrLabel(value) {
+  return Number.isFinite(value) ? `${value.toFixed(4)} dB` : "Inf dB - identik";
+}
+
+function number(value) {
+  return Number.isFinite(value) ? Math.round(value).toLocaleString("id-ID") : "-";
+}
+
+function decimal(value, digits = 4) {
+  return Number.isFinite(value) ? value.toLocaleString("id-ID", { maximumFractionDigits: digits, minimumFractionDigits: digits }) : "Inf";
+}
+
+function percent(value, digits = 4) {
+  return Number.isFinite(value) ? `${decimal(value, digits)}%` : "Inf%";
+}
+
+function milliseconds(ms) {
+  return Number.isFinite(ms) ? `${ms.toLocaleString("id-ID", { maximumFractionDigits: 3 })} ms` : "-";
+}
+
 function seconds(ms) {
   return `${(ms / 1000).toFixed(4)} s`;
 }
 
 function bits(value) {
-  return `${Math.round(value)} bit`;
+  return `${number(value)} bit`;
 }
 
 function bytes(value) {
@@ -2535,6 +3255,7 @@ function buildRleExport(result) {
     width: result.rle.width,
     height: result.rle.height,
     levelCount: result.quantization.levelCount,
+    resolutionInfo: result.resolutionInfo,
     symbolBitWidth: result.rle.symbolBitWidth,
     countBitWidth: result.rle.countBitWidth,
     pairCount: result.rle.pairCount,
@@ -2544,6 +3265,9 @@ function buildRleExport(result) {
     checksumBefore: result.quantizedChecksum,
     checksumAfter: result.rle.decodedChecksum,
     roundTripStatus: result.rle.roundTripStatus,
+    reconstructionQuality: result.rle.reconstructionQuality,
+    roundTripValidation: result.rle.roundTripValidation,
+    timing: result.rle.timing,
     quantizationGroups: result.quantization.groups,
     rows: result.rle.rows,
   };
@@ -2555,6 +3279,7 @@ function buildHuffmanExport(result) {
     width: result.working.width,
     height: result.working.height,
     levelCount: result.quantization.levelCount,
+    resolutionInfo: result.resolutionInfo,
     bitLength: result.huffman.packed.bitLength,
     payloadBytes: result.huffman.payloadBytes,
     payloadBits: result.huffman.payloadBits,
@@ -2566,6 +3291,9 @@ function buildHuffmanExport(result) {
     checksumBefore: result.quantizedChecksum,
     checksumAfter: result.huffman.decodedChecksum,
     roundTripStatus: result.huffman.roundTripStatus,
+    reconstructionQuality: result.huffman.reconstructionQuality,
+    roundTripValidation: result.huffman.roundTripValidation,
+    timing: result.huffman.timing,
     quantizationGroups: result.quantization.groups,
   };
 }
