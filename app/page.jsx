@@ -22,31 +22,25 @@ import {
   buildReconstructionMetrics,
   buildRoundTripMetrics,
   buildSkippedReason,
-  buildBenchmarkSummary,
-  buildResolutionExperimentRows,
   classifyContentCategory,
   classifyCompression,
   serializeAnomalySummaryCsv,
   serializeRawNumericCsv,
   serializeResearchSummaryCsv,
-  serializeResolutionExperimentRawCsv,
   serializeSummaryByContentCategoryCsv,
   serializeSummaryByFormatCsv,
-  serializeSummaryByResolutionCsv,
   serializeTimingSummaryCsv,
-  summarizeResolutionExperimentRows,
   summarizeAnomalyRows,
   summarizeResearchRows,
   summarizeResearchRowsByContentCategory,
   summarizeResearchRowsByFormat,
   summarizeTimingRows,
-  validateControlledResolutionExperimentRows,
 } from "../lib/research-metrics.js";
 
 const LEVELS = [256, 128, 64, 32, 16, 8];
-const METHODS = ["RLE", "Huffman", "Kuantisasi + RLE", "Kuantisasi + Huffman", "Kuantisasi + Perbandingan RLE dan Huffman"];
-const OUTPUT_MODES = ["1. Alur Lengkap", "2. Per Citra/Tahap"];
-const MAX_PIXELS = 1200000;
+const FULL_FLOW_METHOD = "Kuantisasi + Perbandingan RLE dan Huffman";
+const FIXED_PROCESSING_MODE = "optimized";
+const MAX_WORKING_PIXELS = 1200000;
 const WORKFLOW_STEPS = ["Input Citra", "Grayscale", "Kuantisasi", "RLE", "Huffman", "Dekompresi", "Evaluasi"];
 const RLE_PAGE_SIZE = 60;
 const TABLE_PAGE_SIZE = 40;
@@ -117,7 +111,6 @@ const TERM_HELP = {
 
 const TABLE_COLUMNS = [
   "No",
-  "Mode Output",
   "Nama Citra",
   "Tahap",
   "Format",
@@ -159,11 +152,6 @@ export default function Home() {
   const [datasetItems, setDatasetItems] = useState([]);
   const [sourceProfile, setSourceProfile] = useState(null);
   const [level, setLevel] = useState(64);
-  const [method, setMethod] = useState("Kuantisasi + Perbandingan RLE dan Huffman");
-  const [processingMode, setProcessingMode] = useState("optimized");
-  const [benchmarkMode, setBenchmarkMode] = useState(false);
-  const [outputMode, setOutputMode] = useState("1. Alur Lengkap");
-  const [showDetailAfterEval, setShowDetailAfterEval] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
   const [result, setResult] = useState(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -177,8 +165,8 @@ export default function Home() {
 
   const detailLines = useMemo(() => {
     if (!result) return [];
-    return buildDetailReport(result, outputMode);
-  }, [result, outputMode]);
+    return buildDetailReport(result);
+  }, [result]);
   const summaryStats = useMemo(() => buildSummaryStats(result), [result]);
   const researchSummaryRows = useMemo(() => summarizeResearchRows(getResearchRawRows(result, multiLevelRows)), [result, multiLevelRows]);
 
@@ -218,7 +206,7 @@ export default function Home() {
       for (const [index, file] of files.entries()) {
         setProcessingStage(`Membaca citra ${index + 1}/${files.length}`);
         try {
-          const image = await decodeImageFile(file, processingMode);
+          const image = await decodeImageFile(file);
           setProcessingStage(`Menganalisis level sumber ${index + 1}/${files.length}`);
           const grayPreview = toGrayscale(image.rgba, image.width, image.height);
           const profile = analyzeSourceQuantization(grayPreview);
@@ -285,12 +273,8 @@ export default function Home() {
     setIsProcessing(true);
     setProcessingStage("Menjalankan pipeline kompresi");
     try {
-      const benchmarkActive = benchmarkMode || processingMode === "controlled_resolution_experiment";
-      const next = benchmarkActive
-        ? runBenchmarkPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile)
-        : runPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile);
+      const next = runPipeline(decoded, fileInfo, level, sourceProfile);
       setResult(next);
-      setShowDetail(showDetailAfterEval);
       setRlePage(0);
     } catch (err) {
       setError(`Tahap evaluasi gagal: ${err instanceof Error ? err.message : "Pemrosesan gagal."}`);
@@ -300,17 +284,10 @@ export default function Home() {
     }
   }
 
-  function downloadCsv() {
-    if (!result) return;
-    const csv = toCsv([TABLE_COLUMNS, ...result.rows.map((row) => TABLE_COLUMNS.map((column) => row[column] ?? "-"))]);
-    downloadText(csv, `${withoutExtension(result.file.name)}_evaluasi.csv`, "text/csv;charset=utf-8");
-  }
-
   function downloadResearchCsv() {
     const rawRows = getResearchRawRows(result, multiLevelRows);
     if (!rawRows.length) return;
-    const name = multiLevelRows.length ? "multi_level_research_raw_numeric.csv" : `${withoutExtension(result.file.name)}_research_raw_numeric.csv`;
-    downloadText(serializeRawNumericCsv(rawRows), name, "text/csv;charset=utf-8");
+    downloadText(serializeRawNumericCsv(rawRows), "multi_level_research_raw_numeric.csv", "text/csv;charset=utf-8");
   }
 
   function downloadResearchSummaryCsv() {
@@ -343,32 +320,6 @@ export default function Home() {
     downloadText(serializeSummaryByContentCategoryCsv(summarizeResearchRowsByContentCategory(rawRows)), "summary_by_content_category.csv", "text/csv;charset=utf-8");
   }
 
-  function downloadResolutionExperimentRawCsv() {
-    const sourceRows = getResearchRawRows(result, multiLevelRows);
-    if (!sourceRows.length) return;
-    const rawRows = buildResolutionExperimentRows(sourceRows);
-    if (!rawRows.length) {
-      const validation = validateControlledResolutionExperimentRows(sourceRows);
-      setError(`resolution_experiment_raw.csv tetap diunduh dengan header saja. Belum ada baris yang memenuhi CONTROLLED_RESOLUTION_EXPERIMENT: PNG, mode original, benchmark aktif, tanpa resize, content_id logo/jalan/pola, dan level 128/64/32/16/8.${validation.errors.length ? ` Contoh masalah: ${validation.errors.slice(0, 2).join("; ")}` : ""}`);
-    } else {
-      setError("");
-    }
-    downloadText(serializeResolutionExperimentRawCsv(rawRows), "resolution_experiment_raw.csv", "text/csv;charset=utf-8");
-  }
-
-  function downloadSummaryByResolutionCsv() {
-    const sourceRows = getResearchRawRows(result, multiLevelRows);
-    if (!sourceRows.length) return;
-    const rawRows = buildResolutionExperimentRows(sourceRows);
-    if (!rawRows.length) {
-      const validation = validateControlledResolutionExperimentRows(sourceRows);
-      setError(`summary_by_resolution.csv tetap diunduh dengan header saja. Belum ada baris controlled resolution yang valid untuk diringkas.${validation.errors.length ? ` Contoh masalah: ${validation.errors.slice(0, 2).join("; ")}` : ""}`);
-    } else {
-      setError("");
-    }
-    downloadText(serializeSummaryByResolutionCsv(summarizeResolutionExperimentRows(rawRows)), "summary_by_resolution.csv", "text/csv;charset=utf-8");
-  }
-
   function downloadDetail() {
     if (!result) return;
     downloadText(detailLines.join("\n"), `${withoutExtension(result.file.name)}_detail_perhitungan.txt`, "text/plain;charset=utf-8");
@@ -395,13 +346,10 @@ export default function Home() {
             rows.push(buildInvalidMultiLevelRow(no++, item, levelValue));
             continue;
           }
-          const benchmarkActive = benchmarkMode || processingMode === "controlled_resolution_experiment";
-          const testResult = (benchmarkActive ? runBenchmarkPipeline : runPipeline)(
+          const testResult = runPipeline(
             item.decoded,
             item.fileInfo,
             levelValue,
-            "Kuantisasi + Perbandingan RLE dan Huffman",
-            "1. Alur Lengkap",
             item.sourceProfile,
           );
           rows.push(buildMultiLevelRow(no++, item, levelValue, testResult));
@@ -430,11 +378,6 @@ export default function Home() {
     setDatasetItems([]);
     setSourceProfile(null);
     setLevel(64);
-    setMethod("Kuantisasi + Perbandingan RLE dan Huffman");
-    setProcessingMode("optimized");
-    setBenchmarkMode(false);
-    setOutputMode("1. Alur Lengkap");
-    setShowDetailAfterEval(false);
     setShowDetail(false);
     setResult(null);
     setIsProcessing(false);
@@ -445,26 +388,6 @@ export default function Home() {
     setAnalysisTableView("Ringkas");
     setError("");
     setRlePage(0);
-  }
-
-  function downloadRleData() {
-    if (!result) return;
-    downloadText(JSON.stringify(buildRleExport(result), null, 2), `${withoutExtension(result.file.name)}_rle_data.json`, "application/json;charset=utf-8");
-  }
-
-  function downloadHuffmanData() {
-    if (!result) return;
-    downloadText(JSON.stringify(buildHuffmanExport(result), null, 2), `${withoutExtension(result.file.name)}_huffman_data.json`, "application/json;charset=utf-8");
-  }
-
-  function downloadRleReconstruction() {
-    if (!result) return;
-    downloadDataUrl(result.images.rleDecompressed, `${withoutExtension(result.file.name)}_rle_reconstruction.png`);
-  }
-
-  function downloadHuffmanReconstruction() {
-    if (!result) return;
-    downloadDataUrl(result.images.huffmanDecompressed, `${withoutExtension(result.file.name)}_huffman_reconstruction.png`);
   }
 
   return (
@@ -494,9 +417,9 @@ export default function Home() {
           <div className="control-header">
             <div>
               <p className="eyebrow">Panel Proses</p>
-              <h2>Atur Citra dan Metode</h2>
+              <h2>Atur Citra dan Level</h2>
             </div>
-            <p>Pilih citra, tentukan level yang valid, lalu jalankan evaluasi. Level sumber akan dibaca otomatis setelah upload.</p>
+            <p>Pilih citra, tentukan level yang valid, lalu jalankan alur lengkap. Level sumber akan dibaca otomatis setelah upload.</p>
           </div>
 
           <label className="field file-field">
@@ -517,54 +440,6 @@ export default function Home() {
             <small className="help">Pilihan sama atau lebih tinggi dari level sumber otomatis dimatikan.</small>
           </label>
 
-          <label className="field wide">
-            <span>Metode</span>
-            <select value={method} onChange={(event) => setMethod(event.target.value)}>
-              {METHODS.map((value) => (
-                <option key={value} value={value}>{value}</option>
-              ))}
-            </select>
-            <small className="help">Pilih kompresi langsung atau gabungan dengan kuantisasi.</small>
-          </label>
-
-          <label className="field wide">
-            <span>Mode Resolusi</span>
-            <select value={processingMode} onChange={(event) => setProcessingMode(event.target.value)} disabled={isProcessing || isMultiTesting}>
-              <option value="optimized">Optimalkan untuk Browser</option>
-              <option value="original">Proses dengan Resolusi Asli</option>
-              <option value="controlled_resolution_experiment">CONTROLLED_RESOLUTION_EXPERIMENT</option>
-            </select>
-            <small className="help">Mode optimasi dapat mengecilkan citra besar. Mode asli lebih akurat terhadap file sumber, tetapi bisa lebih lambat.</small>
-          </label>
-
-          <label className="field wide">
-            <span>Mode Output</span>
-            <select value={outputMode} onChange={(event) => setOutputMode(event.target.value)}>
-              {OUTPUT_MODES.map((value) => (
-                <option key={value} value={value}>{value}</option>
-              ))}
-            </select>
-            <small className="help">Alur lengkap menampilkan setiap tahap, per citra memisahkan output utama.</small>
-          </label>
-
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={showDetailAfterEval}
-              onChange={(event) => setShowDetailAfterEval(event.target.checked)}
-            />
-            <span>Tampilkan detail perhitungan setelah evaluasi</span>
-          </label>
-
-          <label className="toggle">
-            <input
-              type="checkbox"
-              checked={benchmarkMode}
-              onChange={(event) => setBenchmarkMode(event.target.checked)}
-            />
-            <span>Benchmark mode: 1 warm-up + 5 measured runs</span>
-          </label>
-
           <div className="source-card">
             <span>Level sumber terdeteksi</span>
             <strong>{sourceProfile ? `${sourceProfile.estimatedLevel} level` : "-"}</strong>
@@ -576,33 +451,7 @@ export default function Home() {
           </div>
 
           <div className="actions">
-            <button type="button" onClick={processImage} disabled={!decoded || isProcessing}>Proses & Evaluasi</button>
-            <button type="button" className="secondary" onClick={() => setShowDetail((value) => !value)} disabled={!result}>
-              {showDetail ? "Sembunyikan Detail" : "Lihat Detail Perhitungan"}
-            </button>
-            <button type="button" className="secondary" onClick={processImage} disabled={!decoded || isProcessing}>Kompres RLE</button>
-            <button type="button" className="secondary" onClick={() => setShowDetail(true)} disabled={!result}>Dekompresi RLE</button>
-            <button type="button" className="secondary" onClick={downloadRleData} disabled={!result}>Unduh Data RLE</button>
-            <button type="button" className="secondary" onClick={downloadRleReconstruction} disabled={!result}>Unduh Citra RLE</button>
-            <button type="button" className="secondary" onClick={processImage} disabled={!decoded || isProcessing}>Kompres Huffman</button>
-            <button type="button" className="secondary" onClick={() => setShowDetail(true)} disabled={!result}>Dekompresi Huffman</button>
-            <button type="button" className="secondary" onClick={downloadHuffmanData} disabled={!result}>Unduh Data Huffman</button>
-            <button type="button" className="secondary" onClick={downloadHuffmanReconstruction} disabled={!result}>Unduh Citra Huffman</button>
-            <button type="button" className="secondary" onClick={runMultiLevelTest} disabled={!datasetItems.some((item) => item.decoded) || isProcessing || isMultiTesting}>
-              {isMultiTesting ? "Menjalankan Multi-Level..." : "Run Multi-Level Test"}
-            </button>
-            <button type="button" className="secondary" onClick={downloadMultiLevelCsv} disabled={!multiLevelRows.length}>Unduh CSV Multi-Level</button>
-            <button type="button" className="secondary" onClick={downloadCsv} disabled={!result}>Unduh CSV</button>
-            <button type="button" className="secondary" onClick={downloadResearchCsv} disabled={!result && !multiLevelRows.length}>Unduh CSV Penelitian - Raw Numeric</button>
-            <button type="button" className="secondary" onClick={downloadResearchSummaryCsv} disabled={!result && !multiLevelRows.length}>summary_by_level.csv</button>
-            <button type="button" className="secondary" onClick={downloadSummaryByFormatCsv} disabled={!result && !multiLevelRows.length}>summary_by_format.csv</button>
-            <button type="button" className="secondary" onClick={downloadSummaryByContentCategoryCsv} disabled={!result && !multiLevelRows.length}>summary_by_content_category.csv</button>
-            <button type="button" className="secondary" onClick={downloadAnomalySummaryCsv} disabled={!result && !multiLevelRows.length}>anomaly_summary.csv</button>
-            <button type="button" className="secondary" onClick={downloadTimingSummaryCsv} disabled={!result && !multiLevelRows.length}>timing_summary.csv</button>
-            <button type="button" className="secondary" onClick={downloadResolutionExperimentRawCsv} disabled={!result && !multiLevelRows.length}>resolution_experiment_raw.csv</button>
-            <button type="button" className="secondary" onClick={downloadSummaryByResolutionCsv} disabled={!result && !multiLevelRows.length}>summary_by_resolution.csv</button>
-            <button type="button" className="secondary" onClick={downloadDetail} disabled={!result}>Unduh Detail</button>
-            <button type="button" className="secondary reset" onClick={resetApp}>Reset</button>
+            <button type="button" onClick={processImage} disabled={!decoded || isProcessing}>Proses Alur Lengkap</button>
           </div>
         </section>
 
@@ -610,7 +459,34 @@ export default function Home() {
 
         <DatasetRecap items={datasetItems} />
 
-        {decoded && <ResolutionPanel decoded={decoded} />}
+        {(decoded || result || multiLevelRows.length > 0) && (
+          <section className="export-panel" aria-label="Aksi dan ekspor penelitian">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">Aksi Penelitian</p>
+                <h2>Detail dan Export CSV</h2>
+              </div>
+              <span>Metadata resolusi tetap tersimpan di raw numeric CSV.</span>
+            </div>
+            <div className="actions compact">
+              <button type="button" className="secondary" onClick={() => setShowDetail((value) => !value)} disabled={!result}>
+                {showDetail ? "Sembunyikan Detail" : "Lihat Detail Perhitungan"}
+              </button>
+              <button type="button" className="secondary" onClick={runMultiLevelTest} disabled={!datasetItems.some((item) => item.decoded) || isProcessing || isMultiTesting}>
+                {isMultiTesting ? "Menjalankan Multi-Level..." : "Run Multi-Level Test"}
+              </button>
+              <button type="button" className="secondary" onClick={downloadMultiLevelCsv} disabled={!multiLevelRows.length}>multi_level_quantization_test.csv</button>
+              <button type="button" className="secondary" onClick={downloadResearchCsv} disabled={!result && !multiLevelRows.length}>Unduh CSV Penelitian - Raw Numeric</button>
+              <button type="button" className="secondary" onClick={downloadResearchSummaryCsv} disabled={!result && !multiLevelRows.length}>summary_by_level.csv</button>
+              <button type="button" className="secondary" onClick={downloadSummaryByFormatCsv} disabled={!result && !multiLevelRows.length}>summary_by_format.csv</button>
+              <button type="button" className="secondary" onClick={downloadSummaryByContentCategoryCsv} disabled={!result && !multiLevelRows.length}>summary_by_content_category.csv</button>
+              <button type="button" className="secondary" onClick={downloadAnomalySummaryCsv} disabled={!result && !multiLevelRows.length}>anomaly_summary.csv</button>
+              <button type="button" className="secondary" onClick={downloadTimingSummaryCsv} disabled={!result && !multiLevelRows.length}>timing_summary.csv</button>
+              <button type="button" className="secondary" onClick={downloadDetail} disabled={!result}>Unduh Detail</button>
+              <button type="button" className="secondary reset" onClick={resetApp}>Reset</button>
+            </div>
+          </section>
+        )}
 
         {(multiLevelRows.length > 0 || isMultiTesting) && (
           <MultiLevelResults rows={multiLevelRows} progress={multiProgress} isRunning={isMultiTesting} onDownload={downloadMultiLevelCsv} />
@@ -643,7 +519,7 @@ export default function Home() {
               <ImagePanel title="Asli" src={decoded.previewUrl} meta={`${decoded.originalWidth} x ${decoded.originalHeight}`} />
               <article className="meaning-panel">
                 <h3>Apa arti hasil ini?</h3>
-                <p>Citra sudah berhasil dibaca. Pilih level kuantisasi di bawah level sumber, lalu klik Proses & Evaluasi untuk melihat grayscale, kuantisasi, RLE, Huffman, dekompresi, dan metrik kualitas.</p>
+                <p>Citra sudah berhasil dibaca. Pilih level kuantisasi di bawah level sumber, lalu klik Proses Alur Lengkap untuk melihat grayscale, kuantisasi, RLE, Huffman, dekompresi, dan metrik kualitas.</p>
               </article>
             </div>
           </section>
@@ -813,45 +689,6 @@ function DatasetRecap({ items }) {
           </tbody>
         </table>
       </div>
-    </section>
-  );
-}
-
-function ResolutionPanel({ decoded }) {
-  const info = decoded.resolutionInfo;
-  return (
-    <section className="resolution-panel" aria-label="Resolusi pemrosesan">
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">Resolusi Pemrosesan</p>
-          <h2>Sumber vs Resolusi Kerja</h2>
-        </div>
-        <span>{info.processingMode === "optimized" ? "Optimasi Browser" : "Resolusi Asli"}</span>
-      </div>
-      {info.wasResized && (
-        <div className="warning-note">
-          Citra diperkecil dari {info.sourceWidth} x {info.sourceHeight} menjadi {info.workingWidth} x {info.workingHeight} agar pemrosesan tetap stabil di browser. Semua ukuran algoritmik dan evaluasi kualitas dihitung berdasarkan resolusi kerja.
-        </div>
-      )}
-      {info.processingMode === "optimized" && (
-        <div className="warning-note">
-          Seluruh ukuran algoritmik, MSE, PSNR, dan waktu proses dihitung berdasarkan resolusi kerja.
-        </div>
-      )}
-      <div className="mini-table-wrap">
-        <table className="mini-table">
-          <tbody>
-            <tr><th>Resolusi sumber</th><td>{info.sourceWidth} x {info.sourceHeight} px</td></tr>
-            <tr><th>Jumlah piksel sumber</th><td>{number(info.sourcePixelCount)} piksel</td></tr>
-            <tr><th>Resolusi kerja</th><td>{info.workingWidth} x {info.workingHeight} px</td></tr>
-            <tr><th>Jumlah piksel kerja</th><td>{number(info.workingPixelCount)} piksel</td></tr>
-            <tr><th>Skala pemrosesan</th><td>{percent(info.resizeScale * 100)}</td></tr>
-            <tr><th>Mode</th><td>{info.processingMode === "optimized" ? "Optimasi Browser" : "Resolusi Asli"}</td></tr>
-            <tr><th>Alasan resize</th><td>{info.resizeReason ?? "Tidak ada resize; algoritma memakai resolusi sumber."}</td></tr>
-          </tbody>
-        </table>
-      </div>
-      <Meaning>Resolusi sumber adalah ukuran asli file yang diunggah. Resolusi kerja adalah ukuran citra yang digunakan oleh algoritma grayscale, kuantisasi, RLE, Huffman, MSE, dan PSNR.</Meaning>
     </section>
   );
 }
@@ -2717,17 +2554,17 @@ function compactIntensities(values) {
   return `${values.slice(0, 6).join(", ")} ... ${values.slice(-4).join(", ")}`;
 }
 
-async function decodeImageFile(file, processingMode = "optimized") {
+async function decodeImageFile(file) {
   const extension = extensionOf(file.name).toLowerCase();
   if (extension === "tif" || extension === "tiff") {
-    return decodeTiff(file, processingMode);
+    return decodeTiff(file);
   }
-  return decodeBrowserImage(file, processingMode);
+  return decodeBrowserImage(file);
 }
 
-async function decodeBrowserImage(file, processingMode = "optimized") {
+async function decodeBrowserImage(file) {
   const bitmap = await createImageBitmap(file);
-  const resized = resizeBox(bitmap.width, bitmap.height, MAX_PIXELS, processingMode);
+  const resized = resizeBox(bitmap.width, bitmap.height);
   const canvas = document.createElement("canvas");
   canvas.width = resized.width;
   canvas.height = resized.height;
@@ -2747,12 +2584,12 @@ async function decodeBrowserImage(file, processingMode = "optimized") {
     originalHeight: bitmap.height,
     channels: 4,
     wasResized: resized.wasResized,
-    resolutionInfo: buildResolutionInfo(bitmap.width, bitmap.height, resized, processingMode),
+    resolutionInfo: buildResolutionInfo(bitmap.width, bitmap.height, resized),
     previewUrl: previewCanvas.toDataURL("image/png"),
   };
 }
 
-async function decodeTiff(file, processingMode = "optimized") {
+async function decodeTiff(file) {
   const mod = await import("utif");
   const UTIF = mod.default ?? mod;
   const buffer = await file.arrayBuffer();
@@ -2766,7 +2603,7 @@ async function decodeTiff(file, processingMode = "optimized") {
   const sourceCtx = sourceCanvas.getContext("2d");
   sourceCtx.putImageData(new ImageData(new Uint8ClampedArray(rgba), ifds[0].width, ifds[0].height), 0, 0);
 
-  const resized = resizeBox(ifds[0].width, ifds[0].height, MAX_PIXELS, processingMode);
+  const resized = resizeBox(ifds[0].width, ifds[0].height);
   const workCanvas = document.createElement("canvas");
   workCanvas.width = resized.width;
   workCanvas.height = resized.height;
@@ -2780,7 +2617,7 @@ async function decodeTiff(file, processingMode = "optimized") {
     originalHeight: ifds[0].height,
     channels: 4,
     wasResized: resized.wasResized,
-    resolutionInfo: buildResolutionInfo(ifds[0].width, ifds[0].height, resized, processingMode),
+    resolutionInfo: buildResolutionInfo(ifds[0].width, ifds[0].height, resized),
     previewUrl: sourceCanvas.toDataURL("image/png"),
   };
 }
@@ -2854,35 +2691,7 @@ function encodeHuffmanWithTiming(codes, symbolCount) {
   };
 }
 
-function runBenchmarkPipeline(decoded, file, level, method, outputMode, sourceProfile) {
-  runPipeline(decoded, file, level, method, outputMode, sourceProfile);
-  const measuredRuns = [];
-  let finalResult = null;
-  for (let run = 0; run < 5; run += 1) {
-    const result = runPipeline(decoded, file, level, method, outputMode, sourceProfile);
-    measuredRuns.push({
-      quantizationMs: result.quantTiming.quantizationMs,
-      rleEncodeMs: result.rle.timing.encodeMs,
-      rleDecodeMs: result.rle.timing.decodeMs,
-      rleTotalMs: result.rle.timing.totalMs,
-      huffmanFrequencyMs: result.huffman.timing.frequencyTableMs,
-      huffmanTreeMs: result.huffman.timing.treeBuildMs,
-      huffmanCodebookMs: result.huffman.timing.codebookBuildMs,
-      huffmanEncodeMs: result.huffman.timing.encodeMs,
-      huffmanDecodeMs: result.huffman.timing.decodeMs,
-      huffmanTotalMs: result.huffman.timing.totalMs,
-    });
-    finalResult = result;
-  }
-  const benchmarkSummary = buildBenchmarkSummary(measuredRuns);
-  return {
-    ...finalResult,
-    benchmarkSummary,
-    rows: buildRows({ ...finalResult, benchmarkSummary }, outputMode),
-  };
-}
-
-function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
+function runPipeline(decoded, file, level, sourceProfile) {
   const grayStart = performance.now();
   const gray = toGrayscale(decoded.rgba, decoded.width, decoded.height);
   const grayMs = performance.now() - grayStart;
@@ -3019,12 +2828,11 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
     actualBytes: huffmanActualBytes,
   };
 
-  const primary = pickPrimaryCompression(method, rle, huffman);
+  const primary = pickPrimaryCompression(rle, huffman);
   const decompressed = primary === "RLE" ? rleReconstructed : huffmanReconstructed;
   const compressedBits = primary === "RLE" ? rle.theoreticalBits : huffman.payloadBits;
-  const isComparisonMode = method === "Kuantisasi + Perbandingan RLE dan Huffman";
-  const encodeMs = isComparisonMode ? rle.encodeMs + huffman.encodeMs : (primary === "RLE" ? rle.encodeMs : huffman.encodeMs);
-  const decodeMs = isComparisonMode ? rle.decodeMs + huffman.decodeMs : (primary === "RLE" ? rle.decodeMs : huffman.decodeMs);
+  const encodeMs = rle.encodeMs + huffman.encodeMs;
+  const decodeMs = rle.decodeMs + huffman.decodeMs;
   const primaryCompressionMetrics = primary === "RLE" ? rleCompressionMetrics : huffmanCompressionMetrics;
   const primaryReconstructionMetrics = primary === "RLE" ? rleReconstructionQuality : huffmanReconstructionQuality;
   const images = {
@@ -3064,28 +2872,25 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
     quantCompressionMetrics,
     rle,
     huffman,
-    compression: { method, primary, sourceLevel: level, sourceRawBits, compressedBits, encodeMs, decodeMs },
+    compression: { method: FULL_FLOW_METHOD, primary, sourceLevel: level, sourceRawBits, compressedBits, encodeMs, decodeMs },
     decompressed,
     primaryCompressionMetrics,
     primaryReconstructionMetrics,
     images,
   };
 
-  return { ...context, rows: buildRows(context, outputMode) };
+  return { ...context, rows: buildRows(context) };
 }
 
-function pickPrimaryCompression(method, rle, huffman) {
-  if (method === "RLE" || method === "Kuantisasi + RLE") return "RLE";
-  if (method === "Huffman" || method === "Kuantisasi + Huffman") return "Huffman";
+function pickPrimaryCompression(rle, huffman) {
   return rle.theoreticalBits <= huffman.payloadBits ? "RLE" : "Huffman";
 }
 
-function buildRows(ctx, outputMode) {
+function buildRows(ctx) {
   const rows = [];
   let no = 1;
   const diskSizeText = fileSize(ctx.file.size);
   const common = {
-    "Mode Output": outputMode,
     "Nama Citra": ctx.file.name,
     Format: ctx.file.format,
     Metode: ctx.compression.method,
@@ -3149,100 +2954,93 @@ function buildRows(ctx, outputMode) {
     Analisis: `RGB dikonversi menjadi satu kanal intensitas. Terdeteksi ${ctx.sourceProfile.uniqueCount} nilai unik, dipetakan sebagai sumber sekitar ${ctx.sourceProfile.estimatedLevel} level.`,
   });
 
-  const includeFull = outputMode.startsWith("1.");
-  if (includeFull || ctx.compression.method.includes("Kuantisasi")) {
-    push({
-      Tahap: includeFull ? "Kuantisasi" : "Citra Kuantisasi",
-      "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
-      "Jumlah Pixel": ctx.working.pixels,
-      "Level Kuantisasi": ctx.quantization.levelCount,
-      "Source File Size (Disk)": diskSizeText,
-      "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
-      "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
-      "Quantized Fixed-bit Size": bits(ctx.quantization.theoreticalBits),
-      "Nilai Unik": uniqueCount(ctx.quantization.codes),
-      "Jumlah Run": "-",
-      "Waktu Encode": seconds(ctx.quantTiming.quantizationMs),
-      "Waktu Decode": "-",
-      "Waktu Total": seconds(ctx.quantTiming.totalMs),
-      "Compression Ratio": fixed(ctx.quantCompressionMetrics.compressionRatio),
-      "Space Saving (%)": fixed(ctx.quantCompressionMetrics.spaceSavingPercent),
-      "Reconstruction MSE": fixed(ctx.quantReconstructionQuality.mse, 6),
-      "Reconstruction PSNR": psnrLabel(ctx.quantReconstructionQuality.psnr),
-      "Status Validasi": "Lossy tahap kuantisasi",
-      Analisis: "Level intensitas dikurangi; reconstruction MSE/PSNR membandingkan grayscale asli dengan hasil inverse quantization.",
-    });
-  }
+  push({
+    Tahap: "Kuantisasi",
+    "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
+    "Jumlah Pixel": ctx.working.pixels,
+    "Level Kuantisasi": ctx.quantization.levelCount,
+    "Source File Size (Disk)": diskSizeText,
+    "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
+    "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
+    "Quantized Fixed-bit Size": bits(ctx.quantization.theoreticalBits),
+    "Nilai Unik": uniqueCount(ctx.quantization.codes),
+    "Jumlah Run": "-",
+    "Waktu Encode": seconds(ctx.quantTiming.quantizationMs),
+    "Waktu Decode": "-",
+    "Waktu Total": seconds(ctx.quantTiming.totalMs),
+    "Compression Ratio": fixed(ctx.quantCompressionMetrics.compressionRatio),
+    "Space Saving (%)": fixed(ctx.quantCompressionMetrics.spaceSavingPercent),
+    "Reconstruction MSE": fixed(ctx.quantReconstructionQuality.mse, 6),
+    "Reconstruction PSNR": psnrLabel(ctx.quantReconstructionQuality.psnr),
+    "Status Validasi": "Lossy tahap kuantisasi",
+    Analisis: "Level intensitas dikurangi; reconstruction MSE/PSNR membandingkan grayscale asli dengan hasil inverse quantization.",
+  });
 
-  if (includeFull && ctx.rle) {
-    push({
-      Tahap: "RLE",
-      "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
-      "Jumlah Pixel": ctx.working.pixels,
-      "Level Kuantisasi": ctx.compression.sourceLevel,
-      "Source File Size (Disk)": diskSizeText,
-      "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
-      "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
-      "Quantized Fixed-bit Size": bits(ctx.compression.sourceRawBits),
-      "RLE Theoretical Payload": bits(ctx.rle.theoreticalBits),
-      "Estimated Export Size": bytes(ctx.rle.actualBytes),
-      "Nilai Unik": uniqueCount(ctx.quantizedCodes),
-      "Jumlah Run": ctx.rle.pairCount,
-      "Waktu Encode": seconds(ctx.rle.encodeMs),
-      "Waktu Decode": seconds(ctx.rle.decodeMs),
-      "Waktu Total": seconds(ctx.rle.timing.totalMs),
-      "Compression Ratio": fixed(ctx.rle.compressionMetrics.compressionRatio),
-      "Space Saving (%)": fixed(ctx.rle.compressionMetrics.spaceSavingPercent),
-      "Reconstruction MSE": fixed(ctx.rle.reconstructionQuality.mse, 6),
-      "Reconstruction PSNR": psnrLabel(ctx.rle.reconstructionQuality.psnr),
-      "Round-trip MSE": fixed(ctx.rle.roundTripValidation.mse, 6),
-      "Round-trip PSNR": psnrLabel(ctx.rle.roundTripValidation.psnr),
-      "Piksel Berbeda": number(ctx.rle.roundTripValidation.differentPixelCount),
-      "Max Absolute Difference": number(ctx.rle.roundTripValidation.maxAbsoluteDifference),
-      "Checksum Sebelum": ctx.rle.roundTripValidation.checksumBefore,
-      "Checksum Sesudah": ctx.rle.roundTripValidation.checksumAfter,
-      "Status Validasi": ctx.rle.roundTripValidation.status,
-      Analisis: "RLE diproses per baris dan lossless terhadap matriks kode kuantisasi; kualitas citra tetap mengikuti hasil kuantisasi.",
-    });
-  }
+  push({
+    Tahap: "RLE",
+    "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
+    "Jumlah Pixel": ctx.working.pixels,
+    "Level Kuantisasi": ctx.compression.sourceLevel,
+    "Source File Size (Disk)": diskSizeText,
+    "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
+    "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
+    "Quantized Fixed-bit Size": bits(ctx.compression.sourceRawBits),
+    "RLE Theoretical Payload": bits(ctx.rle.theoreticalBits),
+    "Estimated Export Size": bytes(ctx.rle.actualBytes),
+    "Nilai Unik": uniqueCount(ctx.quantizedCodes),
+    "Jumlah Run": ctx.rle.pairCount,
+    "Waktu Encode": seconds(ctx.rle.encodeMs),
+    "Waktu Decode": seconds(ctx.rle.decodeMs),
+    "Waktu Total": seconds(ctx.rle.timing.totalMs),
+    "Compression Ratio": fixed(ctx.rle.compressionMetrics.compressionRatio),
+    "Space Saving (%)": fixed(ctx.rle.compressionMetrics.spaceSavingPercent),
+    "Reconstruction MSE": fixed(ctx.rle.reconstructionQuality.mse, 6),
+    "Reconstruction PSNR": psnrLabel(ctx.rle.reconstructionQuality.psnr),
+    "Round-trip MSE": fixed(ctx.rle.roundTripValidation.mse, 6),
+    "Round-trip PSNR": psnrLabel(ctx.rle.roundTripValidation.psnr),
+    "Piksel Berbeda": number(ctx.rle.roundTripValidation.differentPixelCount),
+    "Max Absolute Difference": number(ctx.rle.roundTripValidation.maxAbsoluteDifference),
+    "Checksum Sebelum": ctx.rle.roundTripValidation.checksumBefore,
+    "Checksum Sesudah": ctx.rle.roundTripValidation.checksumAfter,
+    "Status Validasi": ctx.rle.roundTripValidation.status,
+    Analisis: "RLE diproses per baris dan lossless terhadap matriks kode kuantisasi; kualitas citra tetap mengikuti hasil kuantisasi.",
+  });
 
-  if (includeFull && ctx.huffman) {
-    push({
-      Tahap: "Huffman",
-      "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
-      "Jumlah Pixel": ctx.working.pixels,
-      "Level Kuantisasi": ctx.compression.sourceLevel,
-      "Source File Size (Disk)": diskSizeText,
-      "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
-      "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
-      "Quantized Fixed-bit Size": bits(ctx.compression.sourceRawBits),
-      "Huffman Theoretical Payload": bits(ctx.huffman.payloadBits),
-      "Estimated Export Size": bytes(ctx.huffman.actualBytes),
-      "Nilai Unik": ctx.huffman.codeEntries.filter((entry) => entry.frequency > 0).length,
-      "Jumlah Run": "-",
-      "Waktu Encode": seconds(ctx.huffman.encodeMs),
-      "Waktu Decode": seconds(ctx.huffman.decodeMs),
-      "Waktu Total": seconds(ctx.huffman.timing.totalMs),
-      "Compression Ratio": fixed(ctx.huffman.compressionMetrics.compressionRatio),
-      "Space Saving (%)": fixed(ctx.huffman.compressionMetrics.spaceSavingPercent),
-      "Reconstruction MSE": fixed(ctx.huffman.reconstructionQuality.mse, 6),
-      "Reconstruction PSNR": psnrLabel(ctx.huffman.reconstructionQuality.psnr),
-      "Round-trip MSE": fixed(ctx.huffman.roundTripValidation.mse, 6),
-      "Round-trip PSNR": psnrLabel(ctx.huffman.roundTripValidation.psnr),
-      "Piksel Berbeda": number(ctx.huffman.roundTripValidation.differentPixelCount),
-      "Max Absolute Difference": number(ctx.huffman.roundTripValidation.maxAbsoluteDifference),
-      "Checksum Sebelum": ctx.huffman.roundTripValidation.checksumBefore,
-      "Checksum Sesudah": ctx.huffman.roundTripValidation.checksumAfter,
-      "Status Validasi": ctx.huffman.roundTripValidation.status,
-      Analisis: "Huffman dibangun dari frekuensi aktual kode kuantisasi dan lossless terhadap matriks kode.",
-    });
-  }
+  push({
+    Tahap: "Huffman",
+    "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
+    "Jumlah Pixel": ctx.working.pixels,
+    "Level Kuantisasi": ctx.compression.sourceLevel,
+    "Source File Size (Disk)": diskSizeText,
+    "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
+    "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
+    "Quantized Fixed-bit Size": bits(ctx.compression.sourceRawBits),
+    "Huffman Theoretical Payload": bits(ctx.huffman.payloadBits),
+    "Estimated Export Size": bytes(ctx.huffman.actualBytes),
+    "Nilai Unik": ctx.huffman.codeEntries.filter((entry) => entry.frequency > 0).length,
+    "Jumlah Run": "-",
+    "Waktu Encode": seconds(ctx.huffman.encodeMs),
+    "Waktu Decode": seconds(ctx.huffman.decodeMs),
+    "Waktu Total": seconds(ctx.huffman.timing.totalMs),
+    "Compression Ratio": fixed(ctx.huffman.compressionMetrics.compressionRatio),
+    "Space Saving (%)": fixed(ctx.huffman.compressionMetrics.spaceSavingPercent),
+    "Reconstruction MSE": fixed(ctx.huffman.reconstructionQuality.mse, 6),
+    "Reconstruction PSNR": psnrLabel(ctx.huffman.reconstructionQuality.psnr),
+    "Round-trip MSE": fixed(ctx.huffman.roundTripValidation.mse, 6),
+    "Round-trip PSNR": psnrLabel(ctx.huffman.roundTripValidation.psnr),
+    "Piksel Berbeda": number(ctx.huffman.roundTripValidation.differentPixelCount),
+    "Max Absolute Difference": number(ctx.huffman.roundTripValidation.maxAbsoluteDifference),
+    "Checksum Sebelum": ctx.huffman.roundTripValidation.checksumBefore,
+    "Checksum Sesudah": ctx.huffman.roundTripValidation.checksumAfter,
+    "Status Validasi": ctx.huffman.roundTripValidation.status,
+    Analisis: "Huffman dibangun dari frekuensi aktual kode kuantisasi dan lossless terhadap matriks kode.",
+  });
 
   const primaryValidation = ctx.compression.primary === "RLE" ? ctx.rle.roundTripValidation : ctx.huffman.roundTripValidation;
   const primaryQuality = ctx.compression.primary === "RLE" ? ctx.rle.reconstructionQuality : ctx.huffman.reconstructionQuality;
   const primaryTiming = ctx.compression.primary === "RLE" ? ctx.rle.timing : ctx.huffman.timing;
   push({
-    Tahap: includeFull ? "Dekompresi" : `Citra Dekompresi ${ctx.compression.method}`,
+    Tahap: "Dekompresi",
     "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
     "Jumlah Pixel": ctx.working.pixels,
     "Level Kuantisasi": ctx.compression.sourceLevel,
@@ -3254,9 +3052,9 @@ function buildRows(ctx, outputMode) {
     "Estimated Export Size": bytes(ctx.compression.primary === "RLE" ? ctx.rle.actualBytes : ctx.huffman.actualBytes),
     "Nilai Unik": uniqueCount(ctx.decompressed),
     "Jumlah Run": ctx.rle?.pairCount ?? "-",
-    "Waktu Encode": includeFull ? "-" : seconds(ctx.compression.encodeMs),
+    "Waktu Encode": "-",
     "Waktu Decode": seconds(ctx.compression.decodeMs),
-    "Waktu Total": includeFull ? seconds(primaryTiming.decodeMs + primaryTiming.reconstructionMs + primaryTiming.validationMs) : seconds(primaryTiming.totalMs),
+    "Waktu Total": seconds(primaryTiming.decodeMs + primaryTiming.reconstructionMs + primaryTiming.validationMs),
     "Compression Ratio": fixed(ctx.primaryCompressionMetrics.compressionRatio),
     "Space Saving (%)": fixed(ctx.primaryCompressionMetrics.spaceSavingPercent),
     "Reconstruction MSE": fixed(primaryQuality.mse, 6),
@@ -3271,42 +3069,40 @@ function buildRows(ctx, outputMode) {
     Analisis: `Data ${ctx.compression.primary} dikembalikan menjadi kode kuantisasi, divalidasi checksum, lalu inverse quantization.`,
   });
 
-  if (includeFull) {
-    push({
-      Tahap: "Evaluasi Akhir",
-      "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
-      "Jumlah Pixel": ctx.working.pixels,
-      "Level Kuantisasi": ctx.compression.sourceLevel,
-      "Source File Size (Disk)": diskSizeText,
-      "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
-      "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
-      "Quantized Fixed-bit Size": bits(ctx.compression.sourceRawBits),
-      [ctx.compression.primary === "RLE" ? "RLE Theoretical Payload" : "Huffman Theoretical Payload"]: bits(ctx.compression.compressedBits),
-      "Estimated Export Size": bytes(ctx.compression.primary === "RLE" ? ctx.rle.actualBytes : ctx.huffman.actualBytes),
-      "Nilai Unik": uniqueCount(ctx.decompressed),
-      "Jumlah Run": ctx.rle?.pairCount ?? "-",
-      "Waktu Encode": seconds(ctx.compression.encodeMs),
-      "Waktu Decode": seconds(ctx.compression.decodeMs),
-      "Waktu Total": seconds((ctx.compression.primary === "RLE" ? ctx.rle.timing.totalMs : ctx.huffman.timing.totalMs)),
-      "Compression Ratio": fixed(ctx.primaryCompressionMetrics.compressionRatio),
-      "Space Saving (%)": fixed(ctx.primaryCompressionMetrics.spaceSavingPercent),
-      "Reconstruction MSE": fixed(primaryQuality.mse, 6),
-      "Reconstruction PSNR": psnrLabel(primaryQuality.psnr),
-      "Round-trip MSE": fixed(primaryValidation.mse, 6),
-      "Round-trip PSNR": psnrLabel(primaryValidation.psnr),
-      "Piksel Berbeda": number(primaryValidation.differentPixelCount),
-      "Max Absolute Difference": number(primaryValidation.maxAbsoluteDifference),
-      "Checksum Sebelum": primaryValidation.checksumBefore,
-      "Checksum Sesudah": primaryValidation.checksumAfter,
-      "Status Validasi": primaryValidation.status,
-      Analisis: `Ringkasan final memakai metode terpilih ${ctx.compression.primary}; RLE dan Huffman tetap dihitung independen.`,
-    });
-  }
+  push({
+    Tahap: "Evaluasi Akhir",
+    "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
+    "Jumlah Pixel": ctx.working.pixels,
+    "Level Kuantisasi": ctx.compression.sourceLevel,
+    "Source File Size (Disk)": diskSizeText,
+    "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
+    "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
+    "Quantized Fixed-bit Size": bits(ctx.compression.sourceRawBits),
+    [ctx.compression.primary === "RLE" ? "RLE Theoretical Payload" : "Huffman Theoretical Payload"]: bits(ctx.compression.compressedBits),
+    "Estimated Export Size": bytes(ctx.compression.primary === "RLE" ? ctx.rle.actualBytes : ctx.huffman.actualBytes),
+    "Nilai Unik": uniqueCount(ctx.decompressed),
+    "Jumlah Run": ctx.rle?.pairCount ?? "-",
+    "Waktu Encode": seconds(ctx.compression.encodeMs),
+    "Waktu Decode": seconds(ctx.compression.decodeMs),
+    "Waktu Total": seconds((ctx.compression.primary === "RLE" ? ctx.rle.timing.totalMs : ctx.huffman.timing.totalMs)),
+    "Compression Ratio": fixed(ctx.primaryCompressionMetrics.compressionRatio),
+    "Space Saving (%)": fixed(ctx.primaryCompressionMetrics.spaceSavingPercent),
+    "Reconstruction MSE": fixed(primaryQuality.mse, 6),
+    "Reconstruction PSNR": psnrLabel(primaryQuality.psnr),
+    "Round-trip MSE": fixed(primaryValidation.mse, 6),
+    "Round-trip PSNR": psnrLabel(primaryValidation.psnr),
+    "Piksel Berbeda": number(primaryValidation.differentPixelCount),
+    "Max Absolute Difference": number(primaryValidation.maxAbsoluteDifference),
+    "Checksum Sebelum": primaryValidation.checksumBefore,
+    "Checksum Sesudah": primaryValidation.checksumAfter,
+    "Status Validasi": primaryValidation.status,
+    Analisis: `Ringkasan final memakai metode terbaik ${ctx.compression.primary}; RLE dan Huffman tetap dihitung independen.`,
+  });
 
   return rows;
 }
 
-function buildDetailReport(ctx, outputMode) {
+function buildDetailReport(ctx) {
   const lines = [];
   const rawOriginalBits = ctx.decoded.originalWidth * ctx.decoded.originalHeight * 4 * 8;
   const q = ctx.quantization;
@@ -3320,12 +3116,10 @@ function buildDetailReport(ctx, outputMode) {
   lines.push(`Nama citra       : ${ctx.file.name}`);
   lines.push(`Format           : ${ctx.file.format}`);
   lines.push(`Metode           : ${ctx.compression.method}`);
-  lines.push(`Mode output      : ${outputMode}`);
   lines.push(`Level kuantisasi : ${ctx.compression.sourceLevel}`);
   lines.push(`Resolusi sumber  : ${ctx.resolutionInfo.sourceWidth} x ${ctx.resolutionInfo.sourceHeight}`);
   lines.push(`Resolusi kerja   : ${ctx.resolutionInfo.workingWidth} x ${ctx.resolutionInfo.workingHeight}`);
-  lines.push(`Mode resolusi    : ${ctx.resolutionInfo.processingMode === "optimized" ? "Optimasi Browser" : "Resolusi Asli"}`);
-  lines.push(`Catatan resolusi : ${ctx.resolutionInfo.wasResized ? ctx.resolutionInfo.resizeReason : "Citra diproses pada resolusi sumber."}`);
+  lines.push(`Catatan resolusi : ${ctx.resolutionInfo.wasResized ? ctx.resolutionInfo.resizeReason : "Citra tidak perlu resize otomatis."}`);
   lines.push("");
   lines.push("A. CITRA DIGITAL DAN UKURAN DATA");
   lines.push("Rumus: Np = M x N");
@@ -3778,10 +3572,7 @@ function unflattenPairs(flat) {
   return pairs;
 }
 
-function resizeBox(width, height, maxPixels, processingMode = "optimized") {
-  if (processingMode === "original" || processingMode === "controlled_resolution_experiment") {
-    return { width, height, wasResized: false, scale: 1, resizeReason: null };
-  }
+function resizeBox(width, height, maxPixels = MAX_WORKING_PIXELS) {
   const pixels = width * height;
   if (pixels <= maxPixels) return { width, height, wasResized: false, scale: 1, resizeReason: null };
   const scale = Math.sqrt(maxPixels / pixels);
@@ -3794,7 +3585,7 @@ function resizeBox(width, height, maxPixels, processingMode = "optimized") {
   };
 }
 
-function buildResolutionInfo(sourceWidth, sourceHeight, resized, processingMode) {
+function buildResolutionInfo(sourceWidth, sourceHeight, resized) {
   return {
     sourceWidth,
     sourceHeight,
@@ -3805,7 +3596,7 @@ function buildResolutionInfo(sourceWidth, sourceHeight, resized, processingMode)
     wasResized: resized.wasResized,
     resizeScale: resized.scale ?? resized.width / sourceWidth,
     resizeReason: resized.resizeReason,
-    processingMode: processingMode === "original" || processingMode === "controlled_resolution_experiment" ? "original" : "optimized",
+    processingMode: FIXED_PROCESSING_MODE,
   };
 }
 
@@ -3905,65 +3696,6 @@ function fileSize(value) {
 
 function toCsv(rows) {
   return rows.map((row) => row.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\n");
-}
-
-function buildRleExport(result) {
-  return {
-    format: "RLE_PER_ROW",
-    width: result.rle.width,
-    height: result.rle.height,
-    levelCount: result.quantization.levelCount,
-    resolutionInfo: result.resolutionInfo,
-    sourceFileSizeBytes: result.file.size,
-    rawSourceGrayscaleBits: result.rawSourceGrayscaleBits,
-    rawWorkingGrayscaleBits: result.rawWorkingGrayscaleBits,
-    quantizedFixedBitSizeBits: result.quantization.theoreticalBits,
-    symbolBitWidth: result.rle.symbolBitWidth,
-    countBitWidth: result.rle.countBitWidth,
-    pairCount: result.rle.pairCount,
-    theoreticalBits: result.rle.theoreticalBits,
-    payloadBytes: result.rle.payloadBytes,
-    actualBytes: result.rle.actualBytes,
-    checksumBefore: result.quantizedChecksum,
-    checksumAfter: result.rle.decodedChecksum,
-    roundTripStatus: result.rle.roundTripStatus,
-    compressionMetrics: result.rle.compressionMetrics,
-    reconstructionQuality: result.rle.reconstructionQuality,
-    roundTripValidation: result.rle.roundTripValidation,
-    timing: result.rle.timing,
-    quantizationGroups: result.quantization.groups,
-    rows: result.rle.rows,
-  };
-}
-
-function buildHuffmanExport(result) {
-  return {
-    format: "HUFFMAN_PACKED_BITS",
-    width: result.working.width,
-    height: result.working.height,
-    levelCount: result.quantization.levelCount,
-    resolutionInfo: result.resolutionInfo,
-    sourceFileSizeBytes: result.file.size,
-    rawSourceGrayscaleBits: result.rawSourceGrayscaleBits,
-    rawWorkingGrayscaleBits: result.rawWorkingGrayscaleBits,
-    quantizedFixedBitSizeBits: result.quantization.theoreticalBits,
-    bitLength: result.huffman.packed.bitLength,
-    payloadBytes: result.huffman.payloadBytes,
-    payloadBits: result.huffman.payloadBits,
-    actualBytes: result.huffman.actualBytes,
-    frequencies: result.huffman.frequencies,
-    codeEntries: result.huffman.codeEntries,
-    mergeHistory: result.huffman.mergeHistory,
-    packedBytes: Array.from(result.huffman.packed.bytes),
-    checksumBefore: result.quantizedChecksum,
-    checksumAfter: result.huffman.decodedChecksum,
-    roundTripStatus: result.huffman.roundTripStatus,
-    compressionMetrics: result.huffman.compressionMetrics,
-    reconstructionQuality: result.huffman.reconstructionQuality,
-    roundTripValidation: result.huffman.roundTripValidation,
-    timing: result.huffman.timing,
-    quantizationGroups: result.quantization.groups,
-  };
 }
 
 function downloadText(text, filename, type) {

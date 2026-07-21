@@ -1,11 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as researchMetrics from "../lib/research-metrics.js";
 import {
   RAW_NUMERIC_COLUMNS,
   RESEARCH_SUMMARY_COLUMNS,
-  RESOLUTION_EXPERIMENT_CONTENT_IDS,
-  RESOLUTION_EXPERIMENT_LEVELS,
-  RESOLUTION_EXPERIMENT_RESOLUTIONS,
   buildBenchmarkSummary,
   buildCompressionMetrics,
   buildDetectedFixedBitSizeBits,
@@ -13,25 +11,19 @@ import {
   buildReconstructionMetrics,
   buildRoundTripMetrics,
   buildSkippedReason,
-  buildResolutionExperimentRows,
   classifyContentCategory,
   classifyCompression,
-  isControlledResolutionExperimentRow,
   serializeAnomalySummaryCsv,
   serializeResearchSummaryCsv,
   serializeRawNumericCsv,
-  serializeResolutionExperimentRawCsv,
   serializeSummaryByContentCategoryCsv,
   serializeSummaryByFormatCsv,
-  serializeSummaryByResolutionCsv,
   serializeTimingSummaryCsv,
-  summarizeResolutionExperimentRows,
   summarizeAnomalyRows,
   summarizeResearchRows,
   summarizeResearchRowsByContentCategory,
   summarizeResearchRowsByFormat,
   summarizeTimingRows,
-  validateControlledResolutionExperimentRows,
 } from "../lib/research-metrics.js";
 
 function parseCsvLine(line) {
@@ -466,109 +458,17 @@ test("HUFFMAN_UNCHANGED masuk anomaly summary dan jumlahnya sama dengan raw nume
   assert.ok(sameCombination.some((row) => row.anomaly_type === "HUFFMAN_UNCHANGED"));
 });
 
-function syntheticResolutionRows() {
-  const rows = [];
-  for (const contentId of RESOLUTION_EXPERIMENT_CONTENT_IDS) {
-    for (const [width, height] of RESOLUTION_EXPERIMENT_RESOLUTIONS) {
-      for (const level of RESOLUTION_EXPERIMENT_LEVELS) {
-        const pixelCount = width * height;
-        rows.push({
-          image_name: `${contentId}_${width}x${height}.png`,
-          source_format: "PNG",
-          content_category: contentId === "logo" ? "HOMOGENEOUS_GRAPHIC" : contentId === "jalan" ? "NATURAL_PHOTO" : "TEXTURE_PATTERN",
-          source_width: width,
-          source_height: height,
-          source_pixel_count: pixelCount,
-          working_width: width,
-          working_height: height,
-          working_pixel_count: pixelCount,
-          was_resized: false,
-          resize_scale: 1,
-          processing_mode: "original",
-          quantization_level: level,
-          quantization_status: "PROCESSED",
-          unique_symbol_count: Math.min(level, 32),
-          rle_pair_count: pixelCount / 8,
-          mean_run_length: 8,
-          quantized_size_bits: pixelCount * Math.ceil(Math.log2(level)),
-          rle_payload_bits: pixelCount * 3,
-          huffman_payload_bits: pixelCount * 2,
-          rle_compression_ratio: 2,
-          huffman_compression_ratio: 3,
-          rle_space_saving_percent: 50,
-          huffman_space_saving_percent: 66.6667,
-          reconstruction_mse: 1.5,
-          reconstruction_psnr_db: 46,
-          benchmark_enabled: true,
-          benchmark_warmup_runs: 1,
-          benchmark_measured_runs: 5,
-          benchmark_rle_encode_mean_ms: 2,
-          benchmark_rle_decode_mean_ms: 3,
-          benchmark_rle_total_mean_ms: 5,
-          benchmark_rle_total_min_ms: 4,
-          benchmark_rle_total_max_ms: 6,
-          benchmark_rle_total_std_ms: 0.7906,
-          benchmark_huffman_encode_mean_ms: 4,
-          benchmark_huffman_decode_mean_ms: 5,
-          benchmark_huffman_total_mean_ms: 9,
-          benchmark_huffman_total_min_ms: 8,
-          benchmark_huffman_total_max_ms: 10,
-          benchmark_huffman_total_std_ms: 0.7906,
-          rle_byte_identical: true,
-          huffman_byte_identical: true,
-        });
-      }
-    }
+test("export dan utility controlled resolution sudah dihapus dari library penelitian", () => {
+  for (const removedExport of [
+    "RESOLUTION_EXPERIMENT_CONTENT_IDS",
+    "RESOLUTION_EXPERIMENT_LEVELS",
+    "RESOLUTION_EXPERIMENT_RESOLUTIONS",
+    "buildResolutionExperimentRows",
+    "serializeResolutionExperimentRawCsv",
+    "serializeSummaryByResolutionCsv",
+    "summarizeResolutionExperimentRows",
+    "validateControlledResolutionExperimentRows",
+  ]) {
+    assert.equal(removedExport in researchMetrics, false, `${removedExport} tidak boleh diekspor lagi`);
   }
-  return rows;
-}
-
-test("controlled resolution memakai original mode, resolusi sama, no resize, 3 content_id x 4 resolusi x 5 level", () => {
-  const rows = syntheticResolutionRows();
-  assert.ok(rows.every((row) => isControlledResolutionExperimentRow(row)));
-  assert.equal(validateControlledResolutionExperimentRows(rows).valid, true);
-  assert.ok(rows.every((row) => row.processing_mode === "original"));
-  assert.ok(rows.every((row) => row.source_width === row.working_width && row.source_height === row.working_height));
-  assert.ok(rows.every((row) => row.was_resized === false));
-
-  for (const contentId of RESOLUTION_EXPERIMENT_CONTENT_IDS) {
-    const contentRows = rows.filter((row) => row.image_name.startsWith(contentId));
-    assert.equal(new Set(contentRows.map((row) => `${row.source_width}x${row.source_height}`)).size, 4);
-    for (const resolution of RESOLUTION_EXPERIMENT_RESOLUTIONS) {
-      const [width, height] = resolution;
-      const resolutionRows = contentRows.filter((row) => row.source_width === width && row.source_height === height);
-      assert.deepEqual(resolutionRows.map((row) => row.quantization_level).sort((a, b) => a - b), [8, 16, 32, 64, 128]);
-    }
-  }
-});
-
-test("resolution experiment raw dan summary_by_resolution dapat diparse sebagai numeric CSV", () => {
-  const rawRows = buildResolutionExperimentRows(syntheticResolutionRows());
-  assert.equal(rawRows.length, RESOLUTION_EXPERIMENT_CONTENT_IDS.length * RESOLUTION_EXPERIMENT_RESOLUTIONS.length * RESOLUTION_EXPERIMENT_LEVELS.length);
-  const rawCsv = serializeResolutionExperimentRawCsv(rawRows);
-  const [rawHeaderLine, rawDataLine] = rawCsv.slice(1).split("\n");
-  const rawHeaders = parseCsvLine(rawHeaderLine);
-  const rawValues = parseCsvLine(rawDataLine);
-  assert.equal(rawHeaders.length, rawValues.length);
-  for (const column of ["width", "height", "pixel_count", "quantization_level", "rle_payload_bits_per_pixel", "huffman_time_ms_per_megapixel"]) {
-    const value = rawValues[rawHeaders.indexOf(column)];
-    assert.ok(Number.isFinite(Number(value)), `${column} harus numeric`);
-  }
-
-  const summaryRows = summarizeResolutionExperimentRows(rawRows);
-  assert.equal(summaryRows.length, RESOLUTION_EXPERIMENT_RESOLUTIONS.length);
-  const summaryCsv = serializeSummaryByResolutionCsv(summaryRows);
-  const [summaryHeaderLine, summaryDataLine] = summaryCsv.slice(1).split("\n");
-  assert.equal(parseCsvLine(summaryHeaderLine).length, parseCsvLine(summaryDataLine).length);
-});
-
-test("resolution export kosong tetap menghasilkan CSV header-only", () => {
-  const rawCsv = serializeResolutionExperimentRawCsv([]);
-  const summaryCsv = serializeSummaryByResolutionCsv([]);
-  assert.equal(rawCsv.charCodeAt(0), 0xfeff);
-  assert.equal(summaryCsv.charCodeAt(0), 0xfeff);
-  assert.match(rawCsv, /"experiment_id"/);
-  assert.match(summaryCsv, /"width","height","pixel_count"/);
-  assert.equal(rawCsv.slice(1).split("\n").length, 1);
-  assert.equal(summaryCsv.slice(1).split("\n").length, 1);
 });

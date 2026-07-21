@@ -91,14 +91,45 @@ test("UI memisahkan kualitas rekonstruksi dan validasi round-trip", () => {
   assert.match(page, /primaryReconstructionMetrics/);
 });
 
-test("UI menjelaskan resolusi sumber dan resolusi kerja", () => {
-  assert.match(page, /Mode Resolusi/);
-  assert.match(page, /Resolusi Pemrosesan/);
-  assert.match(page, /Resolusi sumber/);
-  assert.match(page, /Resolusi kerja/);
-  assert.match(page, /Seluruh ukuran algoritmik, MSE, PSNR, dan waktu proses dihitung berdasarkan resolusi kerja/);
-  assert.match(css, /resolution-panel/);
-  assert.match(css, /warning-note/);
+test("UI final tidak menampilkan pilihan mode output atau controlled resolution", () => {
+  assert.match(page, /Proses Alur Lengkap/);
+  for (const removedText of [
+    "Mode Output",
+    "Mode Resolusi",
+    "Optimalkan untuk Browser",
+    "Proses dengan Resolusi Asli",
+    "CONTROLLED_RESOLUTION_EXPERIMENT",
+    "resolution_experiment_raw.csv",
+    "summary_by_resolution.csv",
+  ]) {
+    assert.doesNotMatch(page, new RegExp(removedText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.doesNotMatch(page, /outputMode/);
+  assert.doesNotMatch(page, /OUTPUT_MODES/);
+  assert.doesNotMatch(page, /setProcessingMode/);
+  assert.doesNotMatch(page, /const \[processingMode/);
+  assert.doesNotMatch(css, /resolution-panel/);
+  assert.doesNotMatch(css, /warning-note/);
+});
+
+test("Pipeline selalu alur lengkap dan metadata resolusi tetap internal", () => {
+  assert.match(page, /const FULL_FLOW_METHOD = "Kuantisasi \+ Perbandingan RLE dan Huffman"/);
+  assert.match(page, /const FIXED_PROCESSING_MODE = "optimized"/);
+  assert.match(page, /const MAX_WORKING_PIXELS = 1200000/);
+  assert.doesNotMatch(page, /includeFull/);
+  for (const stage of ['Tahap: "Kuantisasi"', 'Tahap: "RLE"', 'Tahap: "Huffman"', 'Tahap: "Dekompresi"', 'Tahap: "Evaluasi Akhir"']) {
+    assert.match(page, new RegExp(stage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  for (const field of ["sourceWidth", "sourceHeight", "workingWidth", "workingHeight", "sourcePixelCount", "workingPixelCount", "resizeScale", "processingMode"]) {
+    assert.match(page, new RegExp(field));
+  }
+});
+
+test("RLE dan Huffman memakai kode kuantisasi langsung secara independen", () => {
+  assert.match(page, /encodeRLEMatrix\(quantizedCodes/);
+  assert.match(page, /encodeHuffmanWithTiming\(quantizedCodes/);
+  assert.doesNotMatch(page, /encodeHuffmanWithTiming\(rle/);
+  assert.match(page, /RLE dan Huffman dibandingkan sebagai dua metode setelah kuantisasi/);
 });
 
 test("RLE dan histogram memakai ringkasan agar tabel besar tidak menumpuk", () => {
@@ -146,14 +177,18 @@ test("Timing detail Huffman dan RLE tersimpan di model", () => {
   }
 });
 
-test("Export controlled resolution tidak diam saat hasil filter kosong", () => {
-  const rawMatch = page.match(/function downloadResolutionExperimentRawCsv[\s\S]*?function downloadSummaryByResolutionCsv/);
-  assert.ok(rawMatch, "fungsi downloadResolutionExperimentRawCsv harus ditemukan");
-  assert.doesNotMatch(rawMatch[0], /if \(!rawRows\.length\) return/);
-  assert.match(rawMatch[0], /serializeResolutionExperimentRawCsv\(rawRows\)/);
-
-  const summaryMatch = page.match(/function downloadSummaryByResolutionCsv[\s\S]*?function downloadDetail/);
-  assert.ok(summaryMatch, "fungsi downloadSummaryByResolutionCsv harus ditemukan");
-  assert.doesNotMatch(summaryMatch[0], /if \(!rawRows\.length\) return/);
-  assert.match(summaryMatch[0], /serializeSummaryByResolutionCsv\(summarizeResolutionExperimentRows\(rawRows\)\)/);
+test("Export penelitian hanya mempertahankan CSV final yang dibutuhkan", () => {
+  for (const keptExport of [
+    "multi_level_research_raw_numeric.csv",
+    "multi_level_quantization_test.csv",
+    "summary_by_level.csv",
+    "summary_by_format.csv",
+    "summary_by_content_category.csv",
+    "anomaly_summary.csv",
+    "timing_summary.csv",
+  ]) {
+    assert.match(page, new RegExp(keptExport.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+  assert.doesNotMatch(page, /serializeResolutionExperimentRawCsv/);
+  assert.doesNotMatch(page, /serializeSummaryByResolutionCsv/);
 });
