@@ -3,6 +3,9 @@ import test from "node:test";
 import {
   RAW_NUMERIC_COLUMNS,
   RESEARCH_SUMMARY_COLUMNS,
+  RESOLUTION_EXPERIMENT_CONTENT_IDS,
+  RESOLUTION_EXPERIMENT_LEVELS,
+  RESOLUTION_EXPERIMENT_RESOLUTIONS,
   buildBenchmarkSummary,
   buildCompressionMetrics,
   buildDetectedFixedBitSizeBits,
@@ -10,16 +13,25 @@ import {
   buildReconstructionMetrics,
   buildRoundTripMetrics,
   buildSkippedReason,
+  buildResolutionExperimentRows,
+  classifyContentCategory,
   classifyCompression,
+  isControlledResolutionExperimentRow,
   serializeAnomalySummaryCsv,
   serializeResearchSummaryCsv,
   serializeRawNumericCsv,
+  serializeResolutionExperimentRawCsv,
+  serializeSummaryByContentCategoryCsv,
   serializeSummaryByFormatCsv,
+  serializeSummaryByResolutionCsv,
   serializeTimingSummaryCsv,
+  summarizeResolutionExperimentRows,
   summarizeAnomalyRows,
   summarizeResearchRows,
+  summarizeResearchRowsByContentCategory,
   summarizeResearchRowsByFormat,
   summarizeTimingRows,
+  validateControlledResolutionExperimentRows,
 } from "../lib/research-metrics.js";
 
 function parseCsvLine(line) {
@@ -60,6 +72,7 @@ const NON_NUMERIC_RAW_COLUMNS = new Set([
   "huffman_checksum_after",
   "huffman_byte_identical",
   "benchmark_enabled",
+  "timing_measurement_mode",
   "quantization_status",
   "skipped_reason",
   "rle_result_category",
@@ -86,6 +99,7 @@ function filledRawNumericRow() {
     huffman_checksum_after: "abc",
     huffman_byte_identical: true,
     benchmark_enabled: true,
+    timing_measurement_mode: "SINGLE_RUN_PER_IMAGE_LEVEL",
     quantization_status: "PROCESSED",
     skipped_reason: "",
     rle_result_category: "EXPANDED",
@@ -244,27 +258,30 @@ test("Reconstruction MSE RLE dan Huffman sama dengan kuantisasi ketika round-tri
 
 test("benchmark mean min max std benar dan waktu berpresisi 4 desimal di CSV", () => {
   const summary = buildBenchmarkSummary([
-    { totalMs: 10, quantizationMs: 1, rleTotalMs: 4, huffmanTotalMs: 5 },
-    { totalMs: 20, quantizationMs: 2, rleTotalMs: 8, huffmanTotalMs: 10 },
-    { totalMs: 30, quantizationMs: 3, rleTotalMs: 12, huffmanTotalMs: 15 },
-    { totalMs: 40, quantizationMs: 4, rleTotalMs: 16, huffmanTotalMs: 20 },
-    { totalMs: 50, quantizationMs: 5, rleTotalMs: 20, huffmanTotalMs: 25 },
+    { quantizationMs: 1, rleEncodeMs: 2, rleDecodeMs: 2, rleTotalMs: 4, huffmanFrequencyMs: 1, huffmanTreeMs: 1, huffmanCodebookMs: 1, huffmanEncodeMs: 2, huffmanDecodeMs: 3, huffmanTotalMs: 5 },
+    { quantizationMs: 2, rleEncodeMs: 4, rleDecodeMs: 4, rleTotalMs: 8, huffmanFrequencyMs: 2, huffmanTreeMs: 2, huffmanCodebookMs: 2, huffmanEncodeMs: 4, huffmanDecodeMs: 6, huffmanTotalMs: 10 },
+    { quantizationMs: 3, rleEncodeMs: 6, rleDecodeMs: 6, rleTotalMs: 12, huffmanFrequencyMs: 3, huffmanTreeMs: 3, huffmanCodebookMs: 3, huffmanEncodeMs: 6, huffmanDecodeMs: 9, huffmanTotalMs: 15 },
+    { quantizationMs: 4, rleEncodeMs: 8, rleDecodeMs: 8, rleTotalMs: 16, huffmanFrequencyMs: 4, huffmanTreeMs: 4, huffmanCodebookMs: 4, huffmanEncodeMs: 8, huffmanDecodeMs: 12, huffmanTotalMs: 20 },
+    { quantizationMs: 5, rleEncodeMs: 10, rleDecodeMs: 10, rleTotalMs: 20, huffmanFrequencyMs: 5, huffmanTreeMs: 5, huffmanCodebookMs: 5, huffmanEncodeMs: 10, huffmanDecodeMs: 15, huffmanTotalMs: 25 },
   ]);
   assert.equal(summary.warmupRuns, 1);
   assert.equal(summary.measuredRuns, 5);
-  assert.equal(summary.totalMeanMs, 30);
-  assert.equal(summary.totalMinMs, 10);
-  assert.equal(summary.totalMaxMs, 50);
-  assert.ok(Math.abs(summary.totalStdMs - Math.sqrt(200)) < 1e-12);
   assert.equal(summary.quantizationMeanMs, 3);
+  assert.equal(summary.quantizationMinMs, 1);
+  assert.equal(summary.quantizationMaxMs, 5);
+  assert.ok(Math.abs(summary.quantizationStdMs - Math.sqrt(2.5)) < 1e-12);
+  assert.equal(summary.rleEncodeMeanMs, 6);
+  assert.equal(summary.rleTotalMeanMs, 12);
+  assert.equal(summary.huffmanFrequencyMeanMs, 3);
+  assert.equal(summary.huffmanTotalMeanMs, 15);
 
   const row = Object.fromEntries(RAW_NUMERIC_COLUMNS.map((column) => [column, ""]));
-  row.benchmark_total_mean_ms = summary.totalMeanMs;
+  row.benchmark_quantization_mean_ms = summary.quantizationMeanMs;
   const csv = serializeRawNumericCsv([row]).slice(1);
   const [headerLine, dataLine] = csv.split("\n");
   const headers = parseCsvLine(headerLine);
   const values = parseCsvLine(dataLine);
-  assert.equal(values[headers.indexOf("benchmark_total_mean_ms")], "30.0000");
+  assert.equal(values[headers.indexOf("benchmark_quantization_mean_ms")], "3.0000");
 });
 
 test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () => {
@@ -272,7 +289,7 @@ test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () 
     {
       image_name: "a.png",
       source_format: "PNG",
-      content_category: "nature",
+      content_category: "NATURAL_PHOTO",
       quantization_level: 64,
       quantization_status: "PROCESSED",
       rle_result_category: "REDUCED",
@@ -283,15 +300,15 @@ test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () 
       huffman_space_saving_percent: -100,
       reconstruction_mse: 4,
       reconstruction_psnr_db: 30,
-      benchmark_total_mean_ms: 10,
       quantization_time_ms: 1,
       rle_total_ms: 4,
       huffman_total_ms: 5,
+      timing_measurement_mode: "SINGLE_RUN_PER_IMAGE_LEVEL",
     },
     {
       image_name: "b.png",
       source_format: "PNG",
-      content_category: "nature",
+      content_category: "NATURAL_PHOTO",
       quantization_level: 64,
       quantization_status: "SKIPPED",
       rle_result_category: "SKIPPED",
@@ -301,7 +318,7 @@ test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () 
     {
       image_name: "c.png",
       source_format: "JPG/JPEG",
-      content_category: "texture",
+      content_category: "TEXTURE_PATTERN",
       quantization_level: 64,
       quantization_status: "PROCESSED",
       rle_result_category: "UNCHANGED",
@@ -312,10 +329,10 @@ test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () 
       huffman_space_saving_percent: 66.6667,
       reconstruction_mse: 2,
       reconstruction_psnr_db: 35,
-      benchmark_total_mean_ms: 20,
       quantization_time_ms: 2,
       rle_total_ms: 8,
       huffman_total_ms: 10,
+      timing_measurement_mode: "SINGLE_RUN_PER_IMAGE_LEVEL",
     },
   ];
   const [summary] = summarizeResearchRows(rows);
@@ -332,9 +349,9 @@ test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () 
   assert.equal(summary.rle_mean_compression_ratio, 1.5);
   assert.equal(summary.mean_reconstruction_mse, 3);
   assert.equal(summary.mean_combined_experiment_time_ms, 15);
-  assert.equal(summary.mean_quantization_time_ms, 1.5);
-  assert.equal(summary.mean_rle_total_time_ms, 6);
-  assert.equal(summary.mean_huffman_total_time_ms, 7.5);
+  assert.equal(summary.mean_single_run_quantization_time_ms, 1.5);
+  assert.equal(summary.mean_single_run_rle_total_time_ms, 6);
+  assert.equal(summary.mean_single_run_huffman_total_time_ms, 7.5);
   assert.equal(summary.best_case_image, "c.png");
   assert.equal(summary.best_case_method, "Huffman");
   assert.equal(summary.worst_case_image, "a.png");
@@ -349,6 +366,12 @@ test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () 
   const formatCsv = serializeSummaryByFormatCsv([formatSummary]);
   assert.equal(parseCsvLine(formatCsv.slice(1).split("\n")[0]).includes("source_format"), true);
 
+  const [contentSummary] = summarizeResearchRowsByContentCategory(rows);
+  assert.equal(contentSummary.content_category, "NATURAL_PHOTO");
+  assert.equal(contentSummary.image_count, 2);
+  const contentCsv = serializeSummaryByContentCategoryCsv([contentSummary]);
+  assert.equal(parseCsvLine(contentCsv.slice(1).split("\n")[0]).includes("content_category"), true);
+
   const anomalies = summarizeAnomalyRows(rows);
   assert.ok(anomalies.some((row) => row.anomaly_type === "SKIPPED_LEVEL"));
   assert.ok(anomalies.some((row) => row.anomaly_type === "HUFFMAN_EXPANDED"));
@@ -356,7 +379,9 @@ test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () 
   assert.equal(parseCsvLine(anomalyCsv.slice(1).split("\n")[0]).includes("anomaly_type"), true);
 
   const timing = summarizeTimingRows(rows);
-  assert.equal(timing[0].mean_quantization_time_ms, 1.5);
+  assert.equal(timing[0].mean_single_run_quantization_time_ms, 1.5);
+  assert.equal(timing[0].timing_measurement_mode, "SINGLE_RUN_PER_IMAGE_LEVEL");
+  assert.match(timing[0].timing_explanation, /mean lintas citra/);
   const timingCsv = serializeTimingSummaryCsv(timing);
   assert.equal(parseCsvLine(timingCsv.slice(1).split("\n")[0]).includes("mean_combined_experiment_time_ms"), true);
 });
@@ -367,4 +392,172 @@ test("seluruh status skipped memiliki alasan", () => {
     { image_name: "b.png", source_format: "PNG", quantization_level: 128, quantization_status: "PROCESSED", skipped_reason: "", rle_result_category: "REDUCED", huffman_result_category: "REDUCED" },
   ];
   assert.ok(rows.filter((row) => row.quantization_status === "SKIPPED").every((row) => row.skipped_reason));
+});
+
+test("kategori konten berasal dari mapping dan tidak pernah unlabeled", () => {
+  assert.equal(classifyContentCategory("abstrak.png"), "SMOOTH_GRADIENT");
+  assert.equal(classifyContentCategory("jalan.tiff"), "NATURAL_PHOTO");
+  assert.equal(classifyContentCategory("unknown-file.png"), "UNCLASSIFIED");
+  assert.notEqual(classifyContentCategory("unknown-file.png"), "unlabeled");
+});
+
+test("nama citra mendapat kategori konsisten di seluruh level", () => {
+  const rows = [128, 64, 32, 16, 8].map((level) => ({
+    image_name: "pola.png",
+    quantization_level: level,
+    content_category: classifyContentCategory("pola.png"),
+  }));
+  assert.equal(new Set(rows.map((row) => row.content_category)).size, 1);
+  assert.equal(rows[0].content_category, "TEXTURE_PATTERN");
+});
+
+test("HUFFMAN_UNCHANGED masuk anomaly summary dan jumlahnya sama dengan raw numeric", () => {
+  const rows = [
+    {
+      image_name: "logo.bmp",
+      source_format: "BMP",
+      content_category: "HOMOGENEOUS_GRAPHIC",
+      quantization_level: 64,
+      quantization_status: "PROCESSED",
+      quantized_size_bits: 600,
+      rle_payload_bits: 900,
+      huffman_payload_bits: 600,
+      rle_estimated_export_bytes: 100,
+      huffman_estimated_export_bytes: 80,
+      rle_result_category: "EXPANDED",
+      huffman_result_category: "UNCHANGED",
+      rle_compression_ratio: 600 / 900,
+      huffman_compression_ratio: 1,
+      rle_space_saving_percent: -50,
+      huffman_space_saving_percent: 0,
+      byte_identical: true,
+      different_pixel_count: 0,
+      max_absolute_difference: 0,
+    },
+    {
+      image_name: "pola.png",
+      source_format: "PNG",
+      content_category: "TEXTURE_PATTERN",
+      quantization_level: 64,
+      quantization_status: "PROCESSED",
+      quantized_size_bits: 600,
+      rle_payload_bits: 300,
+      huffman_payload_bits: 300,
+      rle_estimated_export_bytes: 40,
+      huffman_estimated_export_bytes: 40,
+      rle_result_category: "REDUCED",
+      huffman_result_category: "REDUCED",
+      rle_compression_ratio: 2,
+      huffman_compression_ratio: 2,
+      byte_identical: true,
+      different_pixel_count: 0,
+      max_absolute_difference: 0,
+    },
+  ];
+  const anomalies = summarizeAnomalyRows(rows);
+  const rawUnchanged = rows.filter((row) => row.huffman_result_category === "UNCHANGED" || Math.abs(row.huffman_compression_ratio - 1) <= 1e-9).length;
+  const anomalyUnchanged = anomalies.filter((row) => row.anomaly_type === "HUFFMAN_UNCHANGED");
+  assert.equal(anomalyUnchanged.length, rawUnchanged);
+  assert.match(anomalyUnchanged[0].explanation, /Payload Huffman sama dengan baseline fixed-bit/);
+
+  const sameCombination = anomalies.filter((row) => row.image_name === "logo.bmp" && row.quantization_level === 64);
+  assert.ok(sameCombination.length >= 2);
+  assert.ok(sameCombination.some((row) => row.anomaly_type === "RLE_EXPANDED"));
+  assert.ok(sameCombination.some((row) => row.anomaly_type === "HUFFMAN_UNCHANGED"));
+});
+
+function syntheticResolutionRows() {
+  const rows = [];
+  for (const contentId of RESOLUTION_EXPERIMENT_CONTENT_IDS) {
+    for (const [width, height] of RESOLUTION_EXPERIMENT_RESOLUTIONS) {
+      for (const level of RESOLUTION_EXPERIMENT_LEVELS) {
+        const pixelCount = width * height;
+        rows.push({
+          image_name: `${contentId}_${width}x${height}.png`,
+          source_format: "PNG",
+          content_category: contentId === "logo" ? "HOMOGENEOUS_GRAPHIC" : contentId === "jalan" ? "NATURAL_PHOTO" : "TEXTURE_PATTERN",
+          source_width: width,
+          source_height: height,
+          source_pixel_count: pixelCount,
+          working_width: width,
+          working_height: height,
+          working_pixel_count: pixelCount,
+          was_resized: false,
+          resize_scale: 1,
+          processing_mode: "original",
+          quantization_level: level,
+          quantization_status: "PROCESSED",
+          unique_symbol_count: Math.min(level, 32),
+          rle_pair_count: pixelCount / 8,
+          mean_run_length: 8,
+          quantized_size_bits: pixelCount * Math.ceil(Math.log2(level)),
+          rle_payload_bits: pixelCount * 3,
+          huffman_payload_bits: pixelCount * 2,
+          rle_compression_ratio: 2,
+          huffman_compression_ratio: 3,
+          rle_space_saving_percent: 50,
+          huffman_space_saving_percent: 66.6667,
+          reconstruction_mse: 1.5,
+          reconstruction_psnr_db: 46,
+          benchmark_enabled: true,
+          benchmark_warmup_runs: 1,
+          benchmark_measured_runs: 5,
+          benchmark_rle_encode_mean_ms: 2,
+          benchmark_rle_decode_mean_ms: 3,
+          benchmark_rle_total_mean_ms: 5,
+          benchmark_rle_total_min_ms: 4,
+          benchmark_rle_total_max_ms: 6,
+          benchmark_rle_total_std_ms: 0.7906,
+          benchmark_huffman_encode_mean_ms: 4,
+          benchmark_huffman_decode_mean_ms: 5,
+          benchmark_huffman_total_mean_ms: 9,
+          benchmark_huffman_total_min_ms: 8,
+          benchmark_huffman_total_max_ms: 10,
+          benchmark_huffman_total_std_ms: 0.7906,
+          rle_byte_identical: true,
+          huffman_byte_identical: true,
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+test("controlled resolution memakai original mode, resolusi sama, no resize, 3 content_id x 4 resolusi x 5 level", () => {
+  const rows = syntheticResolutionRows();
+  assert.ok(rows.every((row) => isControlledResolutionExperimentRow(row)));
+  assert.equal(validateControlledResolutionExperimentRows(rows).valid, true);
+  assert.ok(rows.every((row) => row.processing_mode === "original"));
+  assert.ok(rows.every((row) => row.source_width === row.working_width && row.source_height === row.working_height));
+  assert.ok(rows.every((row) => row.was_resized === false));
+
+  for (const contentId of RESOLUTION_EXPERIMENT_CONTENT_IDS) {
+    const contentRows = rows.filter((row) => row.image_name.startsWith(contentId));
+    assert.equal(new Set(contentRows.map((row) => `${row.source_width}x${row.source_height}`)).size, 4);
+    for (const resolution of RESOLUTION_EXPERIMENT_RESOLUTIONS) {
+      const [width, height] = resolution;
+      const resolutionRows = contentRows.filter((row) => row.source_width === width && row.source_height === height);
+      assert.deepEqual(resolutionRows.map((row) => row.quantization_level).sort((a, b) => a - b), [8, 16, 32, 64, 128]);
+    }
+  }
+});
+
+test("resolution experiment raw dan summary_by_resolution dapat diparse sebagai numeric CSV", () => {
+  const rawRows = buildResolutionExperimentRows(syntheticResolutionRows());
+  assert.equal(rawRows.length, RESOLUTION_EXPERIMENT_CONTENT_IDS.length * RESOLUTION_EXPERIMENT_RESOLUTIONS.length * RESOLUTION_EXPERIMENT_LEVELS.length);
+  const rawCsv = serializeResolutionExperimentRawCsv(rawRows);
+  const [rawHeaderLine, rawDataLine] = rawCsv.slice(1).split("\n");
+  const rawHeaders = parseCsvLine(rawHeaderLine);
+  const rawValues = parseCsvLine(rawDataLine);
+  assert.equal(rawHeaders.length, rawValues.length);
+  for (const column of ["width", "height", "pixel_count", "quantization_level", "rle_payload_bits_per_pixel", "huffman_time_ms_per_megapixel"]) {
+    const value = rawValues[rawHeaders.indexOf(column)];
+    assert.ok(Number.isFinite(Number(value)), `${column} harus numeric`);
+  }
+
+  const summaryRows = summarizeResolutionExperimentRows(rawRows);
+  assert.equal(summaryRows.length, RESOLUTION_EXPERIMENT_RESOLUTIONS.length);
+  const summaryCsv = serializeSummaryByResolutionCsv(summaryRows);
+  const [summaryHeaderLine, summaryDataLine] = summaryCsv.slice(1).split("\n");
+  assert.equal(parseCsvLine(summaryHeaderLine).length, parseCsvLine(summaryDataLine).length);
 });

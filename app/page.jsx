@@ -23,14 +23,21 @@ import {
   buildRoundTripMetrics,
   buildSkippedReason,
   buildBenchmarkSummary,
+  buildResolutionExperimentRows,
+  classifyContentCategory,
   classifyCompression,
   serializeAnomalySummaryCsv,
   serializeRawNumericCsv,
   serializeResearchSummaryCsv,
+  serializeResolutionExperimentRawCsv,
+  serializeSummaryByContentCategoryCsv,
   serializeSummaryByFormatCsv,
+  serializeSummaryByResolutionCsv,
   serializeTimingSummaryCsv,
+  summarizeResolutionExperimentRows,
   summarizeAnomalyRows,
   summarizeResearchRows,
+  summarizeResearchRowsByContentCategory,
   summarizeResearchRowsByFormat,
   summarizeTimingRows,
 } from "../lib/research-metrics.js";
@@ -153,7 +160,6 @@ export default function Home() {
   const [level, setLevel] = useState(64);
   const [method, setMethod] = useState("Kuantisasi + Perbandingan RLE dan Huffman");
   const [processingMode, setProcessingMode] = useState("optimized");
-  const [contentCategory, setContentCategory] = useState("unlabeled");
   const [benchmarkMode, setBenchmarkMode] = useState(false);
   const [outputMode, setOutputMode] = useState("1. Alur Lengkap");
   const [showDetailAfterEval, setShowDetailAfterEval] = useState(false);
@@ -278,9 +284,10 @@ export default function Home() {
     setIsProcessing(true);
     setProcessingStage("Menjalankan pipeline kompresi");
     try {
-      const next = benchmarkMode
-        ? runBenchmarkPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile, contentCategory)
-        : runPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile, contentCategory);
+      const benchmarkActive = benchmarkMode || processingMode === "controlled_resolution_experiment";
+      const next = benchmarkActive
+        ? runBenchmarkPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile)
+        : runPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile);
       setResult(next);
       setShowDetail(showDetailAfterEval);
       setRlePage(0);
@@ -329,6 +336,24 @@ export default function Home() {
     downloadText(serializeTimingSummaryCsv(summarizeTimingRows(rawRows)), "timing_summary.csv", "text/csv;charset=utf-8");
   }
 
+  function downloadSummaryByContentCategoryCsv() {
+    const rawRows = getResearchRawRows(result, multiLevelRows);
+    if (!rawRows.length) return;
+    downloadText(serializeSummaryByContentCategoryCsv(summarizeResearchRowsByContentCategory(rawRows)), "summary_by_content_category.csv", "text/csv;charset=utf-8");
+  }
+
+  function downloadResolutionExperimentRawCsv() {
+    const rawRows = buildResolutionExperimentRows(getResearchRawRows(result, multiLevelRows));
+    if (!rawRows.length) return;
+    downloadText(serializeResolutionExperimentRawCsv(rawRows), "resolution_experiment_raw.csv", "text/csv;charset=utf-8");
+  }
+
+  function downloadSummaryByResolutionCsv() {
+    const rawRows = buildResolutionExperimentRows(getResearchRawRows(result, multiLevelRows));
+    if (!rawRows.length) return;
+    downloadText(serializeSummaryByResolutionCsv(summarizeResolutionExperimentRows(rawRows)), "summary_by_resolution.csv", "text/csv;charset=utf-8");
+  }
+
   function downloadDetail() {
     if (!result) return;
     downloadText(detailLines.join("\n"), `${withoutExtension(result.file.name)}_detail_perhitungan.txt`, "text/plain;charset=utf-8");
@@ -352,17 +377,17 @@ export default function Home() {
           setMultiProgress(`${imageIndex + 1}/${validItems.length} citra, level ${levelValue}`);
           await yieldToBrowser();
           if (levelValue >= item.sourceProfile.estimatedLevel) {
-            rows.push(buildInvalidMultiLevelRow(no++, item, levelValue, contentCategory));
+            rows.push(buildInvalidMultiLevelRow(no++, item, levelValue));
             continue;
           }
-          const testResult = (benchmarkMode ? runBenchmarkPipeline : runPipeline)(
+          const benchmarkActive = benchmarkMode || processingMode === "controlled_resolution_experiment";
+          const testResult = (benchmarkActive ? runBenchmarkPipeline : runPipeline)(
             item.decoded,
             item.fileInfo,
             levelValue,
             "Kuantisasi + Perbandingan RLE dan Huffman",
             "1. Alur Lengkap",
             item.sourceProfile,
-            contentCategory,
           );
           rows.push(buildMultiLevelRow(no++, item, levelValue, testResult));
           setMultiLevelRows([...rows]);
@@ -392,7 +417,6 @@ export default function Home() {
     setLevel(64);
     setMethod("Kuantisasi + Perbandingan RLE dan Huffman");
     setProcessingMode("optimized");
-    setContentCategory("unlabeled");
     setBenchmarkMode(false);
     setOutputMode("1. Alur Lengkap");
     setShowDetailAfterEval(false);
@@ -493,6 +517,7 @@ export default function Home() {
             <select value={processingMode} onChange={(event) => setProcessingMode(event.target.value)} disabled={isProcessing || isMultiTesting}>
               <option value="optimized">Optimalkan untuk Browser</option>
               <option value="original">Proses dengan Resolusi Asli</option>
+              <option value="controlled_resolution_experiment">CONTROLLED_RESOLUTION_EXPERIMENT</option>
             </select>
             <small className="help">Mode optimasi dapat mengecilkan citra besar. Mode asli lebih akurat terhadap file sumber, tetapi bisa lebih lambat.</small>
           </label>
@@ -505,17 +530,6 @@ export default function Home() {
               ))}
             </select>
             <small className="help">Alur lengkap menampilkan setiap tahap, per citra memisahkan output utama.</small>
-          </label>
-
-          <label className="field">
-            <span>Kategori Konten</span>
-            <input
-              type="text"
-              value={contentCategory}
-              onChange={(event) => setContentCategory(event.target.value)}
-              placeholder="mis. nature, portrait, document"
-            />
-            <small className="help">Metadata penelitian opsional; gunakan unlabeled jika belum diklasifikasi.</small>
           </label>
 
           <label className="toggle">
@@ -567,8 +581,11 @@ export default function Home() {
             <button type="button" className="secondary" onClick={downloadResearchCsv} disabled={!result && !multiLevelRows.length}>Unduh CSV Penelitian - Raw Numeric</button>
             <button type="button" className="secondary" onClick={downloadResearchSummaryCsv} disabled={!result && !multiLevelRows.length}>summary_by_level.csv</button>
             <button type="button" className="secondary" onClick={downloadSummaryByFormatCsv} disabled={!result && !multiLevelRows.length}>summary_by_format.csv</button>
+            <button type="button" className="secondary" onClick={downloadSummaryByContentCategoryCsv} disabled={!result && !multiLevelRows.length}>summary_by_content_category.csv</button>
             <button type="button" className="secondary" onClick={downloadAnomalySummaryCsv} disabled={!result && !multiLevelRows.length}>anomaly_summary.csv</button>
             <button type="button" className="secondary" onClick={downloadTimingSummaryCsv} disabled={!result && !multiLevelRows.length}>timing_summary.csv</button>
+            <button type="button" className="secondary" onClick={downloadResolutionExperimentRawCsv} disabled={!result && !multiLevelRows.length}>resolution_experiment_raw.csv</button>
+            <button type="button" className="secondary" onClick={downloadSummaryByResolutionCsv} disabled={!result && !multiLevelRows.length}>summary_by_resolution.csv</button>
             <button type="button" className="secondary" onClick={downloadDetail} disabled={!result}>Unduh Detail</button>
             <button type="button" className="secondary reset" onClick={resetApp}>Reset</button>
           </div>
@@ -922,9 +939,9 @@ function ResearchSummary({ rows, onDownload }) {
               <th>Mean SS Huffman</th>
               <th>Mean MSE</th>
               <th>Mean PSNR</th>
-              <th>Mean Quant Time</th>
-              <th>Mean RLE Time</th>
-              <th>Mean Huffman Time</th>
+              <th>Mean Single Quant Time</th>
+              <th>Mean Single RLE Time</th>
+              <th>Mean Single Huffman Time</th>
               <th>Mean Combined Time</th>
               <th>Best Case</th>
               <th>Worst Case</th>
@@ -948,9 +965,9 @@ function ResearchSummary({ rows, onDownload }) {
                 <td>{displayPercent(row.huffman_mean_space_saving_percent)}</td>
                 <td>{displayDecimal(row.mean_reconstruction_mse, 6)}</td>
                 <td>{displayPsnr(row.mean_reconstruction_psnr_db)}</td>
-                <td>{displayMilliseconds(row.mean_quantization_time_ms)}</td>
-                <td>{displayMilliseconds(row.mean_rle_total_time_ms)}</td>
-                <td>{displayMilliseconds(row.mean_huffman_total_time_ms)}</td>
+                <td>{displayMilliseconds(row.mean_single_run_quantization_time_ms)}</td>
+                <td>{displayMilliseconds(row.mean_single_run_rle_total_time_ms)}</td>
+                <td>{displayMilliseconds(row.mean_single_run_huffman_total_time_ms)}</td>
                 <td>{displayMilliseconds(row.mean_combined_experiment_time_ms)}</td>
                 <td>{row.best_case_image ? `${row.best_case_method} ${decimal(row.best_case_compression_ratio, 4)} - ${row.best_case_image}` : "-"}</td>
                 <td>{row.worst_case_image ? `${row.worst_case_method} ${decimal(row.worst_case_compression_ratio, 4)} - ${row.worst_case_image}` : "-"}</td>
@@ -1952,13 +1969,12 @@ function buildDatasetRecap(items) {
   });
 }
 
-function buildInvalidMultiLevelRow(no, item, levelValue, contentCategory = "unlabeled") {
+function buildInvalidMultiLevelRow(no, item, levelValue) {
   const resolution = item.decoded?.resolutionInfo;
   const skippedReason = buildSkippedReason();
-  const itemWithCategory = { ...item, contentCategory };
   return {
     No: no,
-    __raw: buildSkippedRawNumericResearchRow(itemWithCategory, levelValue, skippedReason),
+    __raw: buildSkippedRawNumericResearchRow(item, levelValue, skippedReason),
     "Image Name": item.fileInfo.name,
     Format: datasetFormatKey(item.fileInfo.format),
     "Resolusi Sumber": resolution ? `${resolution.sourceWidth} x ${resolution.sourceHeight}` : "-",
@@ -2084,6 +2100,9 @@ function buildRawNumericResearchRow(result) {
     raw_source_grayscale_size_bits: result.rawSourceGrayscaleBits,
     raw_working_grayscale_size_bits: result.rawWorkingGrayscaleBits,
     quantized_size_bits: result.quantization.theoreticalBits,
+    unique_symbol_count: result.huffman.uniqueSymbolCount,
+    rle_pair_count: result.rle.pairCount,
+    mean_run_length: result.rle.averageRunLength,
     rle_payload_bits: result.rle.theoreticalBits,
     huffman_payload_bits: result.huffman.payloadBits,
     rle_estimated_export_bytes: result.rle.actualBytes,
@@ -2128,16 +2147,50 @@ function buildRawNumericResearchRow(result) {
     huffman_inverse_quantization_ms: result.huffman.timing.inverseQuantizationMs,
     huffman_validation_ms: result.huffman.timing.validationMs,
     huffman_total_ms: result.huffman.timing.totalMs,
+    timing_measurement_mode: benchmark ? "REPEATED_RUN_BENCHMARK" : "SINGLE_RUN_PER_IMAGE_LEVEL",
     benchmark_enabled: Boolean(benchmark),
     benchmark_warmup_runs: benchmark?.warmupRuns ?? 0,
     benchmark_measured_runs: benchmark?.measuredRuns ?? 0,
-    benchmark_total_mean_ms: benchmark?.totalMeanMs ?? "",
-    benchmark_total_min_ms: benchmark?.totalMinMs ?? "",
-    benchmark_total_max_ms: benchmark?.totalMaxMs ?? "",
-    benchmark_total_std_ms: benchmark?.totalStdMs ?? "",
     benchmark_quantization_mean_ms: benchmark?.quantizationMeanMs ?? "",
+    benchmark_quantization_min_ms: benchmark?.quantizationMinMs ?? "",
+    benchmark_quantization_max_ms: benchmark?.quantizationMaxMs ?? "",
+    benchmark_quantization_std_ms: benchmark?.quantizationStdMs ?? "",
+    benchmark_rle_encode_mean_ms: benchmark?.rleEncodeMeanMs ?? "",
+    benchmark_rle_encode_min_ms: benchmark?.rleEncodeMinMs ?? "",
+    benchmark_rle_encode_max_ms: benchmark?.rleEncodeMaxMs ?? "",
+    benchmark_rle_encode_std_ms: benchmark?.rleEncodeStdMs ?? "",
+    benchmark_rle_decode_mean_ms: benchmark?.rleDecodeMeanMs ?? "",
+    benchmark_rle_decode_min_ms: benchmark?.rleDecodeMinMs ?? "",
+    benchmark_rle_decode_max_ms: benchmark?.rleDecodeMaxMs ?? "",
+    benchmark_rle_decode_std_ms: benchmark?.rleDecodeStdMs ?? "",
     benchmark_rle_total_mean_ms: benchmark?.rleTotalMeanMs ?? "",
+    benchmark_rle_total_min_ms: benchmark?.rleTotalMinMs ?? "",
+    benchmark_rle_total_max_ms: benchmark?.rleTotalMaxMs ?? "",
+    benchmark_rle_total_std_ms: benchmark?.rleTotalStdMs ?? "",
+    benchmark_huffman_frequency_mean_ms: benchmark?.huffmanFrequencyMeanMs ?? "",
+    benchmark_huffman_frequency_min_ms: benchmark?.huffmanFrequencyMinMs ?? "",
+    benchmark_huffman_frequency_max_ms: benchmark?.huffmanFrequencyMaxMs ?? "",
+    benchmark_huffman_frequency_std_ms: benchmark?.huffmanFrequencyStdMs ?? "",
+    benchmark_huffman_tree_mean_ms: benchmark?.huffmanTreeMeanMs ?? "",
+    benchmark_huffman_tree_min_ms: benchmark?.huffmanTreeMinMs ?? "",
+    benchmark_huffman_tree_max_ms: benchmark?.huffmanTreeMaxMs ?? "",
+    benchmark_huffman_tree_std_ms: benchmark?.huffmanTreeStdMs ?? "",
+    benchmark_huffman_codebook_mean_ms: benchmark?.huffmanCodebookMeanMs ?? "",
+    benchmark_huffman_codebook_min_ms: benchmark?.huffmanCodebookMinMs ?? "",
+    benchmark_huffman_codebook_max_ms: benchmark?.huffmanCodebookMaxMs ?? "",
+    benchmark_huffman_codebook_std_ms: benchmark?.huffmanCodebookStdMs ?? "",
+    benchmark_huffman_encode_mean_ms: benchmark?.huffmanEncodeMeanMs ?? "",
+    benchmark_huffman_encode_min_ms: benchmark?.huffmanEncodeMinMs ?? "",
+    benchmark_huffman_encode_max_ms: benchmark?.huffmanEncodeMaxMs ?? "",
+    benchmark_huffman_encode_std_ms: benchmark?.huffmanEncodeStdMs ?? "",
+    benchmark_huffman_decode_mean_ms: benchmark?.huffmanDecodeMeanMs ?? "",
+    benchmark_huffman_decode_min_ms: benchmark?.huffmanDecodeMinMs ?? "",
+    benchmark_huffman_decode_max_ms: benchmark?.huffmanDecodeMaxMs ?? "",
+    benchmark_huffman_decode_std_ms: benchmark?.huffmanDecodeStdMs ?? "",
     benchmark_huffman_total_mean_ms: benchmark?.huffmanTotalMeanMs ?? "",
+    benchmark_huffman_total_min_ms: benchmark?.huffmanTotalMinMs ?? "",
+    benchmark_huffman_total_max_ms: benchmark?.huffmanTotalMaxMs ?? "",
+    benchmark_huffman_total_std_ms: benchmark?.huffmanTotalStdMs ?? "",
     quantization_status: "PROCESSED",
     skipped_reason: "",
     rle_result_category: classifyCompression(result.rle.compressionMetrics.compressionRatio),
@@ -2153,7 +2206,7 @@ function buildSkippedRawNumericResearchRow(item, levelValue, skippedReason = bui
   return {
     image_name: item.fileInfo.name,
     source_format: datasetFormatKey(item.fileInfo.format),
-    content_category: normalizeContentCategory(item.contentCategory),
+    content_category: classifyContentCategory(item.fileInfo.name),
     source_file_size_bytes: item.fileInfo.size,
     source_width: resolution.sourceWidth ?? "",
     source_height: resolution.sourceHeight ?? "",
@@ -2171,6 +2224,9 @@ function buildSkippedRawNumericResearchRow(item, levelValue, skippedReason = bui
     raw_source_grayscale_size_bits: sourcePixelCount ? buildGrayscaleRawSizeBits(sourcePixelCount) : "",
     raw_working_grayscale_size_bits: workingPixelCount ? buildGrayscaleRawSizeBits(workingPixelCount) : "",
     quantized_size_bits: "",
+    unique_symbol_count: "",
+    rle_pair_count: "",
+    mean_run_length: "",
     rle_payload_bits: "",
     huffman_payload_bits: "",
     rle_estimated_export_bytes: "",
@@ -2215,16 +2271,50 @@ function buildSkippedRawNumericResearchRow(item, levelValue, skippedReason = bui
     huffman_inverse_quantization_ms: "",
     huffman_validation_ms: "",
     huffman_total_ms: "",
+    timing_measurement_mode: "SINGLE_RUN_PER_IMAGE_LEVEL",
     benchmark_enabled: false,
     benchmark_warmup_runs: 0,
     benchmark_measured_runs: 0,
-    benchmark_total_mean_ms: "",
-    benchmark_total_min_ms: "",
-    benchmark_total_max_ms: "",
-    benchmark_total_std_ms: "",
     benchmark_quantization_mean_ms: "",
+    benchmark_quantization_min_ms: "",
+    benchmark_quantization_max_ms: "",
+    benchmark_quantization_std_ms: "",
+    benchmark_rle_encode_mean_ms: "",
+    benchmark_rle_encode_min_ms: "",
+    benchmark_rle_encode_max_ms: "",
+    benchmark_rle_encode_std_ms: "",
+    benchmark_rle_decode_mean_ms: "",
+    benchmark_rle_decode_min_ms: "",
+    benchmark_rle_decode_max_ms: "",
+    benchmark_rle_decode_std_ms: "",
     benchmark_rle_total_mean_ms: "",
+    benchmark_rle_total_min_ms: "",
+    benchmark_rle_total_max_ms: "",
+    benchmark_rle_total_std_ms: "",
+    benchmark_huffman_frequency_mean_ms: "",
+    benchmark_huffman_frequency_min_ms: "",
+    benchmark_huffman_frequency_max_ms: "",
+    benchmark_huffman_frequency_std_ms: "",
+    benchmark_huffman_tree_mean_ms: "",
+    benchmark_huffman_tree_min_ms: "",
+    benchmark_huffman_tree_max_ms: "",
+    benchmark_huffman_tree_std_ms: "",
+    benchmark_huffman_codebook_mean_ms: "",
+    benchmark_huffman_codebook_min_ms: "",
+    benchmark_huffman_codebook_max_ms: "",
+    benchmark_huffman_codebook_std_ms: "",
+    benchmark_huffman_encode_mean_ms: "",
+    benchmark_huffman_encode_min_ms: "",
+    benchmark_huffman_encode_max_ms: "",
+    benchmark_huffman_encode_std_ms: "",
+    benchmark_huffman_decode_mean_ms: "",
+    benchmark_huffman_decode_min_ms: "",
+    benchmark_huffman_decode_max_ms: "",
+    benchmark_huffman_decode_std_ms: "",
     benchmark_huffman_total_mean_ms: "",
+    benchmark_huffman_total_min_ms: "",
+    benchmark_huffman_total_max_ms: "",
+    benchmark_huffman_total_std_ms: "",
     quantization_status: "SKIPPED",
     skipped_reason: skippedReason,
     rle_result_category: "SKIPPED",
@@ -2357,11 +2447,6 @@ function datasetFormatKey(format) {
   if (value === "BMP") return "BMP";
   if (value === "TIF" || value === "TIFF") return "TIFF";
   return value || "UNKNOWN";
-}
-
-function normalizeContentCategory(value) {
-  const clean = String(value || "").trim();
-  return clean || "unlabeled";
 }
 
 function buildHistogramFromCodes(codes, levelCount) {
@@ -2740,6 +2825,7 @@ function encodeHuffmanWithTiming(codes, symbolCount) {
     averageLength,
     entropy,
     efficiency: averageLength > 0 ? (entropy / averageLength) * 100 : 0,
+    uniqueSymbolCount: codeEntries.filter((entry) => entry.frequency > 0).length,
     symbolCount,
     pixelCount: codes.length,
     timing: {
@@ -2753,18 +2839,22 @@ function encodeHuffmanWithTiming(codes, symbolCount) {
   };
 }
 
-function runBenchmarkPipeline(decoded, file, level, method, outputMode, sourceProfile, contentCategory = "unlabeled") {
-  runPipeline(decoded, file, level, method, outputMode, sourceProfile, contentCategory);
+function runBenchmarkPipeline(decoded, file, level, method, outputMode, sourceProfile) {
+  runPipeline(decoded, file, level, method, outputMode, sourceProfile);
   const measuredRuns = [];
   let finalResult = null;
   for (let run = 0; run < 5; run += 1) {
-    const totalStart = performance.now();
-    const result = runPipeline(decoded, file, level, method, outputMode, sourceProfile, contentCategory);
-    const totalMs = performance.now() - totalStart;
+    const result = runPipeline(decoded, file, level, method, outputMode, sourceProfile);
     measuredRuns.push({
-      totalMs,
       quantizationMs: result.quantTiming.quantizationMs,
+      rleEncodeMs: result.rle.timing.encodeMs,
+      rleDecodeMs: result.rle.timing.decodeMs,
       rleTotalMs: result.rle.timing.totalMs,
+      huffmanFrequencyMs: result.huffman.timing.frequencyTableMs,
+      huffmanTreeMs: result.huffman.timing.treeBuildMs,
+      huffmanCodebookMs: result.huffman.timing.codebookBuildMs,
+      huffmanEncodeMs: result.huffman.timing.encodeMs,
+      huffmanDecodeMs: result.huffman.timing.decodeMs,
       huffmanTotalMs: result.huffman.timing.totalMs,
     });
     finalResult = result;
@@ -2777,7 +2867,7 @@ function runBenchmarkPipeline(decoded, file, level, method, outputMode, sourcePr
   };
 }
 
-function runPipeline(decoded, file, level, method, outputMode, sourceProfile, contentCategory = "unlabeled") {
+function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
   const grayStart = performance.now();
   const gray = toGrayscale(decoded.rgba, decoded.width, decoded.height);
   const grayMs = performance.now() - grayStart;
@@ -2932,7 +3022,7 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile, co
 
   const context = {
     file,
-    contentCategory: normalizeContentCategory(contentCategory),
+    contentCategory: classifyContentCategory(file.name),
     decoded,
     resolutionInfo: decoded.resolutionInfo,
     working: { width: decoded.width, height: decoded.height, pixels: decoded.width * decoded.height, grayMs },
@@ -3674,7 +3764,7 @@ function unflattenPairs(flat) {
 }
 
 function resizeBox(width, height, maxPixels, processingMode = "optimized") {
-  if (processingMode === "original") {
+  if (processingMode === "original" || processingMode === "controlled_resolution_experiment") {
     return { width, height, wasResized: false, scale: 1, resizeReason: null };
   }
   const pixels = width * height;
@@ -3700,7 +3790,7 @@ function buildResolutionInfo(sourceWidth, sourceHeight, resized, processingMode)
     wasResized: resized.wasResized,
     resizeScale: resized.scale ?? resized.width / sourceWidth,
     resizeReason: resized.resizeReason,
-    processingMode: processingMode === "original" ? "original" : "optimized",
+    processingMode: processingMode === "original" || processingMode === "controlled_resolution_experiment" ? "original" : "optimized",
   };
 }
 
