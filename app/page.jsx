@@ -40,6 +40,7 @@ import {
   summarizeResearchRowsByContentCategory,
   summarizeResearchRowsByFormat,
   summarizeTimingRows,
+  validateControlledResolutionExperimentRows,
 } from "../lib/research-metrics.js";
 
 const LEVELS = [256, 128, 64, 32, 16, 8];
@@ -343,14 +344,28 @@ export default function Home() {
   }
 
   function downloadResolutionExperimentRawCsv() {
-    const rawRows = buildResolutionExperimentRows(getResearchRawRows(result, multiLevelRows));
-    if (!rawRows.length) return;
+    const sourceRows = getResearchRawRows(result, multiLevelRows);
+    if (!sourceRows.length) return;
+    const rawRows = buildResolutionExperimentRows(sourceRows);
+    if (!rawRows.length) {
+      const validation = validateControlledResolutionExperimentRows(sourceRows);
+      setError(`resolution_experiment_raw.csv tetap diunduh dengan header saja. Belum ada baris yang memenuhi CONTROLLED_RESOLUTION_EXPERIMENT: PNG, mode original, benchmark aktif, tanpa resize, content_id logo/jalan/pola, dan level 128/64/32/16/8.${validation.errors.length ? ` Contoh masalah: ${validation.errors.slice(0, 2).join("; ")}` : ""}`);
+    } else {
+      setError("");
+    }
     downloadText(serializeResolutionExperimentRawCsv(rawRows), "resolution_experiment_raw.csv", "text/csv;charset=utf-8");
   }
 
   function downloadSummaryByResolutionCsv() {
-    const rawRows = buildResolutionExperimentRows(getResearchRawRows(result, multiLevelRows));
-    if (!rawRows.length) return;
+    const sourceRows = getResearchRawRows(result, multiLevelRows);
+    if (!sourceRows.length) return;
+    const rawRows = buildResolutionExperimentRows(sourceRows);
+    if (!rawRows.length) {
+      const validation = validateControlledResolutionExperimentRows(sourceRows);
+      setError(`summary_by_resolution.csv tetap diunduh dengan header saja. Belum ada baris controlled resolution yang valid untuk diringkas.${validation.errors.length ? ` Contoh masalah: ${validation.errors.slice(0, 2).join("; ")}` : ""}`);
+    } else {
+      setError("");
+    }
     downloadText(serializeSummaryByResolutionCsv(summarizeResolutionExperimentRows(rawRows)), "summary_by_resolution.csv", "text/csv;charset=utf-8");
   }
 

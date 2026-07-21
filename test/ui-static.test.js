@@ -145,3 +145,15 @@ test("Timing detail Huffman dan RLE tersimpan di model", () => {
     assert.match(page, new RegExp(token));
   }
 });
+
+test("Export controlled resolution tidak diam saat hasil filter kosong", () => {
+  const rawMatch = page.match(/function downloadResolutionExperimentRawCsv[\s\S]*?function downloadSummaryByResolutionCsv/);
+  assert.ok(rawMatch, "fungsi downloadResolutionExperimentRawCsv harus ditemukan");
+  assert.doesNotMatch(rawMatch[0], /if \(!rawRows\.length\) return/);
+  assert.match(rawMatch[0], /serializeResolutionExperimentRawCsv\(rawRows\)/);
+
+  const summaryMatch = page.match(/function downloadSummaryByResolutionCsv[\s\S]*?function downloadDetail/);
+  assert.ok(summaryMatch, "fungsi downloadSummaryByResolutionCsv harus ditemukan");
+  assert.doesNotMatch(summaryMatch[0], /if \(!rawRows\.length\) return/);
+  assert.match(summaryMatch[0], /serializeSummaryByResolutionCsv\(summarizeResolutionExperimentRows\(rawRows\)\)/);
+});

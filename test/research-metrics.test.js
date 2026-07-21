@@ -561,3 +561,14 @@ test("resolution experiment raw dan summary_by_resolution dapat diparse sebagai 
   const [summaryHeaderLine, summaryDataLine] = summaryCsv.slice(1).split("\n");
   assert.equal(parseCsvLine(summaryHeaderLine).length, parseCsvLine(summaryDataLine).length);
 });
+
+test("resolution export kosong tetap menghasilkan CSV header-only", () => {
+  const rawCsv = serializeResolutionExperimentRawCsv([]);
+  const summaryCsv = serializeSummaryByResolutionCsv([]);
+  assert.equal(rawCsv.charCodeAt(0), 0xfeff);
+  assert.equal(summaryCsv.charCodeAt(0), 0xfeff);
+  assert.match(rawCsv, /"experiment_id"/);
+  assert.match(summaryCsv, /"width","height","pixel_count"/);
+  assert.equal(rawCsv.slice(1).split("\n").length, 1);
+  assert.equal(summaryCsv.slice(1).split("\n").length, 1);
+});
