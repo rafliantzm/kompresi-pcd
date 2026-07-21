@@ -3,16 +3,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   arraysEqual,
+  buildFrequencyTable,
+  buildHuffmanCodebook,
+  buildHuffmanTree,
   checksum as dataChecksum,
   decodeHuffman as decodeHuffmanCore,
   decodeRLEMatrix,
-  encodeHuffman as encodeHuffmanCore,
   encodeRLEMatrix,
   estimateActualBytes,
   inverseQuantization,
-  metricSet as computeMetrics,
+  packBits,
   quantizeEqualPopulation,
 } from "../lib/compression-core.js";
+import {
+  buildCompressionMetrics,
+  buildReconstructionMetrics,
+  buildRoundTripMetrics,
+  buildSkippedReason,
+  classifyCompression,
+  serializeRawNumericCsv,
+} from "../lib/research-metrics.js";
 
 const LEVELS = [256, 128, 64, 32, 16, 8];
 const METHODS = ["RLE", "Huffman", "Kuantisasi + RLE", "Kuantisasi + Huffman", "Kuantisasi + Perbandingan RLE dan Huffman"];
@@ -30,10 +40,12 @@ const MULTI_LEVEL_COLUMNS = [
   "Resolusi Kerja",
   "Quantization Level",
   "Bit per Piksel",
-  "Original Size",
-  "Quantized Size",
-  "RLE Size",
-  "Huffman Size",
+  "Raw Working Grayscale Size",
+  "Quantized Fixed-bit Size",
+  "RLE Theoretical Payload",
+  "Huffman Theoretical Payload",
+  "RLE Estimated Export Size",
+  "Huffman Estimated Export Size",
   "Compression Ratio RLE",
   "Compression Ratio Huffman",
   "Space Saving RLE",
@@ -51,8 +63,17 @@ const MULTI_LEVEL_COLUMNS = [
   "Waktu Kuantisasi",
   "Waktu RLE Encode",
   "Waktu RLE Decode",
+  "Waktu RLE Inverse Quantization",
+  "Waktu RLE Validasi",
   "Waktu Huffman Encode",
+  "Waktu Huffman Frequency",
+  "Waktu Huffman Tree",
+  "Waktu Huffman Codebook",
+  "Waktu Huffman Bitstream",
+  "Waktu Huffman Packing",
   "Waktu Huffman Decode",
+  "Waktu Huffman Inverse Quantization",
+  "Waktu Huffman Validasi",
   "Total Waktu RLE",
   "Total Waktu Huffman",
   "Best Method",
@@ -85,10 +106,14 @@ const TABLE_COLUMNS = [
   "Jumlah Pixel",
   "Level Kuantisasi",
   "Metode",
-  "Ukuran File (Disk)",
-  "Ukuran Data Mentah",
+  "Source File Size (Disk)",
+  "Raw Source Grayscale Size",
+  "Raw Working Grayscale Size",
+  "Quantized Fixed-bit Size",
+  "RLE Theoretical Payload",
+  "Huffman Theoretical Payload",
+  "Estimated Export Size",
   "Nilai Unik",
-  "Ukuran Kompresi",
   "Jumlah Run",
   "Waktu Encode",
   "Waktu Decode",
@@ -231,7 +256,7 @@ export default function Home() {
     }
 
     if (sourceProfile && level >= sourceProfile.estimatedLevel) {
-      setError(`Level kuantisasi ${level} tidak valid karena level sumber terdeteksi sekitar ${sourceProfile.estimatedLevel}. Kuantisasi harus memilih level di bawah level sumber, bukan sama atau lebih besar.`);
+      setError(`SKIPPED: level kuantisasi ${level} tidak diproses karena level sumber terdeteksi sekitar ${sourceProfile.estimatedLevel}. ${buildSkippedReason()}`);
       return;
     }
 
@@ -255,6 +280,15 @@ export default function Home() {
     if (!result) return;
     const csv = toCsv([TABLE_COLUMNS, ...result.rows.map((row) => TABLE_COLUMNS.map((column) => row[column] ?? "-"))]);
     downloadText(csv, `${withoutExtension(result.file.name)}_evaluasi.csv`, "text/csv;charset=utf-8");
+  }
+
+  function downloadResearchCsv() {
+    const rawRows = multiLevelRows.length
+      ? multiLevelRows.map((row) => row.__raw).filter(Boolean)
+      : result ? [buildRawNumericResearchRow(result)] : [];
+    if (!rawRows.length) return;
+    const name = multiLevelRows.length ? "multi_level_research_raw_numeric.csv" : `${withoutExtension(result.file.name)}_research_raw_numeric.csv`;
+    downloadText(serializeRawNumericCsv(rawRows), name, "text/csv;charset=utf-8");
   }
 
   function downloadDetail() {
@@ -396,7 +430,7 @@ export default function Home() {
             <select value={level} onChange={(event) => setLevel(Number(event.target.value))}>
               {LEVELS.map((value) => (
                 <option key={value} value={value} disabled={sourceProfile ? value >= sourceProfile.estimatedLevel : false}>
-                  {value} level{sourceProfile && value >= sourceProfile.estimatedLevel ? " (tidak valid)" : ""}
+                  {value} level{sourceProfile && value >= sourceProfile.estimatedLevel ? " (SKIPPED)" : ""}
                 </option>
               ))}
             </select>
@@ -469,6 +503,7 @@ export default function Home() {
             </button>
             <button type="button" className="secondary" onClick={downloadMultiLevelCsv} disabled={!multiLevelRows.length}>Unduh CSV Multi-Level</button>
             <button type="button" className="secondary" onClick={downloadCsv} disabled={!result}>Unduh CSV</button>
+            <button type="button" className="secondary" onClick={downloadResearchCsv} disabled={!result && !multiLevelRows.length}>Unduh CSV Penelitian - Raw Numeric</button>
             <button type="button" className="secondary" onClick={downloadDetail} disabled={!result}>Unduh Detail</button>
             <button type="button" className="secondary reset" onClick={resetApp}>Reset</button>
           </div>
@@ -697,6 +732,11 @@ function ResolutionPanel({ decoded }) {
           Citra diperkecil dari {info.sourceWidth} x {info.sourceHeight} menjadi {info.workingWidth} x {info.workingHeight} agar pemrosesan tetap stabil di browser. Semua ukuran algoritmik dan evaluasi kualitas dihitung berdasarkan resolusi kerja.
         </div>
       )}
+      {info.processingMode === "optimized" && (
+        <div className="warning-note">
+          Seluruh ukuran algoritmik, MSE, PSNR, dan waktu proses dihitung berdasarkan resolusi kerja.
+        </div>
+      )}
       <div className="mini-table-wrap">
         <table className="mini-table">
           <tbody>
@@ -813,7 +853,7 @@ function buildSummaryStats(result) {
     { label: "Level Sumber", value: `${result.sourceProfile.estimatedLevel} level`, note: `${result.sourceProfile.uniqueCount} nilai unik` },
     { label: "RLE", value: bits(result.rle.theoreticalBits), note: result.rle.roundTripValidation.isByteIdentical ? "Round-trip valid" : "Round-trip gagal" },
     { label: "Huffman", value: bits(result.huffman.payloadBits), note: result.huffman.roundTripValidation.isByteIdentical ? "Round-trip valid" : "Round-trip gagal" },
-    { label: "Compression Ratio", value: fixed(result.finalMetrics.cr), note: "Semakin besar, semakin baik" },
+    { label: "Compression Ratio", value: fixed(result.primaryCompressionMetrics.compressionRatio), note: result.primaryCompressionMetrics.baselineLabel },
     { label: "Kualitas", value: `MSE ${fixed(result.quantReconstructionQuality.mse, 6)}`, note: `PSNR ${psnrLabel(result.quantReconstructionQuality.psnr)}` },
   ];
 }
@@ -887,7 +927,7 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         title="Run-Length Encoding (RLE)"
         goal="Menyimpan deretan simbol yang sama sebagai pasangan nilai dan panjang run."
         controls="Gunakan tab Ringkasan, Pasangan per Baris, Dekompresi, dan Penjelasan untuk melihat detail bertahap."
-        resultSummary={`${result.rle.pairCount} run, ukuran teoritis ${bits(result.rle.theoreticalBits)}, CR ${fixed(result.rle.metrics.cr)}.`}
+        resultSummary={`${result.rle.pairCount} run, ukuran teoritis ${bits(result.rle.theoreticalBits)}, CR ${fixed(result.rle.compressionMetrics.compressionRatio)}.`}
         process={<span>RLE diproses per baris. Pasangan (p,q) berarti <Term name="simbol" /> p muncul berurutan sebanyak q pada satu <Term name="run" />.</span>}
         howToRead="Jika jumlah run mendekati jumlah piksel, RLE biasanya tidak efisien. Jika run panjang banyak muncul, ukuran bit turun."
         status={result.rle.identical ? "Valid, decoded RLE identik dengan kode kuantisasi." : "Tidak valid, decoded RLE berbeda dari kode kuantisasi."}
@@ -906,8 +946,8 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
               ["Baris run paling sedikit", rleRowsSummary.reduce((best, row) => row.runCount < best.runCount ? row : best, rleRowsSummary[0])?.row],
               ["Baris run paling banyak", rleRowsSummary.reduce((best, row) => row.runCount > best.runCount ? row : best, rleRowsSummary[0])?.row],
               ["Ukuran teoritis", bits(result.rle.theoreticalBits)],
-              ["Compression Ratio", decimal(result.rle.metrics.cr, 4)],
-              ["Space Saving", percent(result.rle.metrics.ss)],
+              ["Compression Ratio", decimal(result.rle.compressionMetrics.compressionRatio, 4)],
+              ["Space Saving", percent(result.rle.compressionMetrics.spaceSavingPercent)],
               ["Total waktu", milliseconds(result.rle.timing.totalMs)],
             ]} />
             <Meaning>Untuk menjaga halaman tetap ringan, tabel menampilkan pasangan RLE berdasarkan baris yang dipilih. Seluruh pasangan tetap tersedia melalui export data RLE.</Meaning>
@@ -1058,7 +1098,7 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         title="Evaluasi"
         goal="Membandingkan efisiensi ukuran dan kualitas hasil rekonstruksi dengan baseline yang jelas."
         controls="Pilih tab Mode Teoritis Materi atau Ukuran Penyimpanan Aktual, lalu unduh CSV/detail jika perlu."
-        resultSummary={`Metode final ${result.compression.primary}, CR ${fixed(result.finalMetrics.cr)}, SS ${fixed(result.finalMetrics.ss)}%, Reconstruction MSE ${fixed(result.finalMetrics.mse, 6)}.`}
+        resultSummary={`Metode final ${result.compression.primary}, CR ${fixed(result.primaryCompressionMetrics.compressionRatio)}, SS ${fixed(result.primaryCompressionMetrics.spaceSavingPercent)}%, Reconstruction MSE ${fixed(result.primaryReconstructionMetrics.mse, 6)}.`}
         process={<span>Mode teoritis memakai rumus kuliah berbasis bit. Mode aktual menambahkan <Term name="payload" />, padding, <Term name="overhead" />, tabel frekuensi, dan mapping kuantisasi.</span>}
         howToRead="Compression Ratio = original size / compressed size. Space Saving = (1 - compressed/original) x 100%."
         status="Evaluasi selesai dengan baseline teoritis dan aktual terpisah."
@@ -1067,7 +1107,7 @@ function AnalysisPanels({ result, rlePage, setRlePage }) {
         <Tabs tabs={["Mode Teoritis Materi", "Ukuran Penyimpanan Aktual"]} active={evaluationTab} onChange={setEvaluationTab} />
         {evaluationTab === "Mode Teoritis Materi" ? <TheoreticalEvaluation result={result} /> : <ActualEvaluation result={result} />}
         <EvaluationMetricBlocks result={result} />
-        <Meaning>MSE mengukur rata-rata kesalahan piksel. Nilai lebih kecil lebih baik. PSNR mengukur kemiripan kualitas; nilai lebih besar lebih baik.</Meaning>
+        <Meaning>MSE mengukur rata-rata kesalahan piksel. Nilai lebih kecil lebih baik. PSNR mengukur kemiripan kualitas; nilai lebih besar lebih baik. Payload teoritis tidak termasuk seluruh metadata dan struktur file. Estimasi ukuran export JSON, bukan format biner optimal.</Meaning>
         <PerMethodConclusions result={result} />
         <div className="conclusion-box">
           <h3>Kesimpulan Otomatis</h3>
@@ -1476,11 +1516,17 @@ function TheoreticalEvaluation({ result }) {
     ["Baseline", `grayscale resolusi kerja ${result.working.width} x ${result.working.height}`, `kode kuantisasi resolusi kerja ${result.working.width} x ${result.working.height}`, `kode kuantisasi resolusi kerja ${result.working.width} x ${result.working.height}`],
     ["Ukuran input algoritmik", bits(result.quantInputBits), bits(result.compression.sourceRawBits), bits(result.compression.sourceRawBits)],
     ["Ukuran hasil", bits(result.quantization.theoreticalBits), bits(result.rle.theoreticalBits), bits(result.huffman.payloadBits)],
-    ["Compression Ratio", decimal(result.quantMetrics.cr, 4), decimal(result.rle.metrics.cr, 4), decimal(result.huffman.metrics.cr, 4)],
-    ["Space Saving", percent(result.quantMetrics.ss), percent(result.rle.metrics.ss), percent(result.huffman.metrics.ss)],
+    ["Compression Ratio", decimal(result.quantCompressionMetrics.compressionRatio, 4), decimal(result.rle.compressionMetrics.compressionRatio, 4), decimal(result.huffman.compressionMetrics.compressionRatio, 4)],
+    ["Space Saving", percent(result.quantCompressionMetrics.spaceSavingPercent), percent(result.rle.compressionMetrics.spaceSavingPercent), percent(result.huffman.compressionMetrics.spaceSavingPercent)],
     ["Waktu encode", milliseconds(result.quantTiming.quantizationMs), milliseconds(result.rle.timing.encodeMs), milliseconds(result.huffman.timing.encodeMs)],
     ["Waktu decode", "-", milliseconds(result.rle.timing.decodeMs), milliseconds(result.huffman.timing.decodeMs)],
-    ["Waktu rekonstruksi", milliseconds(result.quantTiming.reconstructionMs), milliseconds(result.rle.timing.reconstructionMs), milliseconds(result.huffman.timing.reconstructionMs)],
+    ["Waktu frequency table", "-", "-", milliseconds(result.huffman.timing.frequencyTableMs)],
+    ["Waktu build tree", "-", "-", milliseconds(result.huffman.timing.treeBuildMs)],
+    ["Waktu build codebook", "-", "-", milliseconds(result.huffman.timing.codebookBuildMs)],
+    ["Waktu encode bitstream", "-", "-", milliseconds(result.huffman.timing.bitstreamEncodeMs)],
+    ["Waktu bit packing", "-", "-", milliseconds(result.huffman.timing.bitPackingMs)],
+    ["Waktu inverse quantization", milliseconds(result.quantTiming.reconstructionMs), milliseconds(result.rle.timing.inverseQuantizationMs), milliseconds(result.huffman.timing.inverseQuantizationMs)],
+    ["Waktu validasi", "-", milliseconds(result.rle.timing.validationMs), milliseconds(result.huffman.timing.validationMs)],
     ["Total waktu", milliseconds(result.quantTiming.totalMs), milliseconds(result.rle.timing.totalMs), milliseconds(result.huffman.timing.totalMs)],
     ["Reconstruction MSE", decimal(result.quantReconstructionQuality.mse, 6), decimal(result.rle.reconstructionQuality.mse, 6), decimal(result.huffman.reconstructionQuality.mse, 6)],
     ["Reconstruction PSNR", psnrLabel(result.quantReconstructionQuality.psnr), psnrLabel(result.rle.reconstructionQuality.psnr), psnrLabel(result.huffman.reconstructionQuality.psnr)],
@@ -1540,9 +1586,9 @@ function ActualEvaluation({ result }) {
             <th>Payload Bytes</th>
             <th>Padding</th>
             <th>Metadata/Overhead Bytes</th>
-            <th>Total Export Aktual</th>
-            <th>Compression Ratio Aktual</th>
-            <th>Space Saving Aktual</th>
+            <th>Estimated Export JSON Bytes</th>
+            <th>Compression Ratio Export JSON</th>
+            <th>Space Saving Export JSON</th>
           </tr>
         </thead>
         <tbody>
@@ -1667,38 +1713,27 @@ function differenceCount(a, b) {
   return count;
 }
 
-function maxAbsoluteDifference(a, b) {
-  if (!a || !b) return 0;
-  const length = Math.min(a.length, b.length);
-  let max = 0;
-  for (let i = 0; i < length; i += 1) {
-    max = Math.max(max, Math.abs(a[i] - b[i]));
-  }
-  return max;
+function buildReconstructionQualityMetrics(originalGrayscale, reconstructedGrayscale) {
+  const metrics = buildReconstructionMetrics(originalGrayscale, reconstructedGrayscale, "quantized-reconstruction");
+  return {
+    ...metrics,
+    isIdenticalToOriginalGrayscale: metrics.mse === 0,
+  };
 }
 
-function buildReconstructionQualityMetrics(originalGrayscale, reconstructedGrayscale) {
-  const metrics = computeMetrics(originalGrayscale, reconstructedGrayscale, originalGrayscale.length * 8, reconstructedGrayscale.length * 8);
+function buildReconstructionQualityForTarget(originalGrayscale, reconstructedGrayscale, target) {
+  const metrics = buildReconstructionMetrics(originalGrayscale, reconstructedGrayscale, target);
   return {
-    mse: metrics.mse,
-    psnr: metrics.psnr,
+    ...metrics,
     isIdenticalToOriginalGrayscale: metrics.mse === 0,
   };
 }
 
 function buildRoundTripValidationMetrics(beforeCodes, afterCodes, checksumBefore) {
-  const metrics = computeMetrics(beforeCodes, afterCodes, beforeCodes.length * 8, afterCodes.length * 8);
-  const differentPixelCount = differenceCount(beforeCodes, afterCodes);
-  const checksumAfter = dataChecksum(afterCodes);
+  const metrics = buildRoundTripMetrics(beforeCodes, afterCodes, checksumBefore);
   return {
-    mse: metrics.mse,
-    psnr: metrics.psnr,
-    differentPixelCount,
-    maxAbsoluteDifference: maxAbsoluteDifference(beforeCodes, afterCodes),
-    checksumBefore,
-    checksumAfter,
-    isByteIdentical: arraysEqual(beforeCodes, afterCodes),
-    status: differentPixelCount === 0 ? "Valid - data decoding identik dengan data kuantisasi" : `Tidak valid - ditemukan ${differentPixelCount} piksel berbeda`,
+    ...metrics,
+    status: metrics.differentPixelCount === 0 ? "Valid - data decoding identik dengan data kuantisasi" : `Tidak valid - ditemukan ${metrics.differentPixelCount} piksel berbeda`,
   };
 }
 
@@ -1709,7 +1744,7 @@ function buildAutoConclusion(result, mode) {
   const rleDense = result.rle.pairCount / result.working.pixels > 0.65;
   const huffmanBetter = mode === "Ukuran Penyimpanan Aktual"
     ? huffmanActualCr > rleActualCr
-    : result.huffman.metrics.cr > result.rle.metrics.cr;
+    : result.huffman.compressionMetrics.compressionRatio > result.rle.compressionMetrics.compressionRatio;
 
   if (huffmanBetter && rleDense) {
     return "RLE kurang efektif pada citra ini karena jumlah run mendekati jumlah piksel. Huffman lebih efektif karena distribusi frekuensi simbol memberi kode lebih pendek untuk simbol yang sering muncul.";
@@ -1726,8 +1761,8 @@ function buildAutoConclusion(result, mode) {
 function buildMethodConclusions(result) {
   const quantLower = result.quantization.levelCount < result.sourceProfile.estimatedLevel;
   const rleLargerThanQuant = result.rle.theoreticalBits > result.quantization.theoreticalBits;
-  const huffmanLowSaving = result.huffman.metrics.ss < 5;
-  const best = result.rle.metrics.cr >= result.huffman.metrics.cr ? "RLE" : "Huffman";
+  const huffmanLowSaving = result.huffman.compressionMetrics.spaceSavingPercent < 5;
+  const best = result.rle.compressionMetrics.compressionRatio >= result.huffman.compressionMetrics.compressionRatio ? "RLE" : "Huffman";
   const qualityText = result.quantReconstructionQuality.mse === 0
     ? "Kualitas rekonstruksi identik pada ukuran grayscale yang diuji karena Reconstruction MSE bernilai 0 dan Reconstruction PSNR Inf."
     : `Kualitas rekonstruksi dipengaruhi kuantisasi dengan Reconstruction MSE ${fixed(result.quantReconstructionQuality.mse)} dan Reconstruction PSNR ${psnrLabel(result.quantReconstructionQuality.psnr)}.`;
@@ -1742,12 +1777,12 @@ function buildMethodConclusions(result) {
       title: "RLE",
       body: rleLargerThanQuant
         ? `RLE menghasilkan ${result.rle.pairCount} run dan ukuran ${bits(result.rle.theoreticalBits)}, lebih besar daripada ukuran kuantisasi ${bits(result.quantization.theoreticalBits)}. Ini menunjukkan citra memiliki terlalu banyak run pendek, sehingga pasangan (p,q) menambah biaya penyimpanan.`
-        : `RLE efektif pada citra ini karena ukuran turun menjadi ${bits(result.rle.theoreticalBits)} dengan compression ratio ${fixed(result.rle.metrics.cr)}. Rata-rata panjang run adalah ${fixed(result.rle.averageRunLength)} piksel/run.`,
+        : `RLE efektif pada citra ini karena ukuran turun menjadi ${bits(result.rle.theoreticalBits)} dengan compression ratio ${fixed(result.rle.compressionMetrics.compressionRatio)}. Rata-rata panjang run adalah ${fixed(result.rle.averageRunLength)} piksel/run.`,
     },
     {
       title: "Huffman",
       body: huffmanLowSaving
-        ? `Huffman hanya memberi space saving ${fixed(result.huffman.metrics.ss)}%. Hal ini mengindikasikan distribusi simbol relatif merata atau panjang kode rata-rata ${fixed(result.huffman.averageLength, 4)} mendekati fixed-length representation.`
+        ? `Huffman hanya memberi space saving ${fixed(result.huffman.compressionMetrics.spaceSavingPercent)}%. Hal ini mengindikasikan distribusi simbol relatif merata atau panjang kode rata-rata ${fixed(result.huffman.averageLength, 4)} mendekati fixed-length representation.`
         : `Huffman efektif karena memanfaatkan distribusi frekuensi simbol. Payload menjadi ${bits(result.huffman.payloadBits)} dengan entropy ${fixed(result.huffman.entropy, 4)} dan panjang kode rata-rata ${fixed(result.huffman.averageLength, 4)} bit/simbol.`,
     },
     {
@@ -1780,18 +1815,22 @@ function buildDatasetRecap(items) {
 
 function buildInvalidMultiLevelRow(no, item, levelValue) {
   const resolution = item.decoded?.resolutionInfo;
+  const skippedReason = buildSkippedReason();
   return {
     No: no,
+    __raw: buildSkippedRawNumericResearchRow(item, levelValue, skippedReason),
     "Image Name": item.fileInfo.name,
     Format: datasetFormatKey(item.fileInfo.format),
     "Resolusi Sumber": resolution ? `${resolution.sourceWidth} x ${resolution.sourceHeight}` : "-",
     "Resolusi Kerja": resolution ? `${resolution.workingWidth} x ${resolution.workingHeight}` : "-",
     "Quantization Level": levelValue,
     "Bit per Piksel": "-",
-    "Original Size": "-",
-    "Quantized Size": "-",
-    "RLE Size": "-",
-    "Huffman Size": "-",
+    "Raw Working Grayscale Size": "-",
+    "Quantized Fixed-bit Size": "-",
+    "RLE Theoretical Payload": "-",
+    "Huffman Theoretical Payload": "-",
+    "RLE Estimated Export Size": "-",
+    "Huffman Estimated Export Size": "-",
     "Compression Ratio RLE": "-",
     "Compression Ratio Huffman": "-",
     "Space Saving RLE": "-",
@@ -1809,34 +1848,46 @@ function buildInvalidMultiLevelRow(no, item, levelValue) {
     "Waktu Kuantisasi": "-",
     "Waktu RLE Encode": "-",
     "Waktu RLE Decode": "-",
+    "Waktu RLE Inverse Quantization": "-",
+    "Waktu RLE Validasi": "-",
     "Waktu Huffman Encode": "-",
+    "Waktu Huffman Frequency": "-",
+    "Waktu Huffman Tree": "-",
+    "Waktu Huffman Codebook": "-",
+    "Waktu Huffman Bitstream": "-",
+    "Waktu Huffman Packing": "-",
     "Waktu Huffman Decode": "-",
+    "Waktu Huffman Inverse Quantization": "-",
+    "Waktu Huffman Validasi": "-",
     "Total Waktu RLE": "-",
     "Total Waktu Huffman": "-",
     "Best Method": "-",
-    Status: `Tidak valid: level ${levelValue} tidak lebih kecil dari level sumber ${item.sourceProfile.estimatedLevel}`,
+    Status: `SKIPPED: level ${levelValue} tidak lebih kecil dari level sumber ${item.sourceProfile.estimatedLevel}`,
   };
 }
 
 function buildMultiLevelRow(no, item, levelValue, result) {
-  const bestMethod = result.rle.metrics.cr >= result.huffman.metrics.cr ? "RLE" : "Huffman";
+  const bestMethod = result.rle.compressionMetrics.compressionRatio >= result.huffman.compressionMetrics.compressionRatio ? "RLE" : "Huffman";
   const resolution = result.resolutionInfo;
   return {
     No: no,
+    __raw: buildRawNumericResearchRow(result),
     "Image Name": item.fileInfo.name,
     Format: datasetFormatKey(item.fileInfo.format),
     "Resolusi Sumber": `${resolution.sourceWidth} x ${resolution.sourceHeight}`,
     "Resolusi Kerja": `${resolution.workingWidth} x ${resolution.workingHeight}`,
     "Quantization Level": levelValue,
     "Bit per Piksel": result.quantization.quantizedBitDepth,
-    "Original Size": bits(result.quantInputBits),
-    "Quantized Size": bits(result.quantization.theoreticalBits),
-    "RLE Size": bits(result.rle.theoreticalBits),
-    "Huffman Size": bits(result.huffman.payloadBits),
-    "Compression Ratio RLE": decimal(result.rle.metrics.cr, 4),
-    "Compression Ratio Huffman": decimal(result.huffman.metrics.cr, 4),
-    "Space Saving RLE": percent(result.rle.metrics.ss),
-    "Space Saving Huffman": percent(result.huffman.metrics.ss),
+    "Raw Working Grayscale Size": bits(result.rawWorkingGrayscaleBits),
+    "Quantized Fixed-bit Size": bits(result.quantization.theoreticalBits),
+    "RLE Theoretical Payload": bits(result.rle.theoreticalBits),
+    "Huffman Theoretical Payload": bits(result.huffman.payloadBits),
+    "RLE Estimated Export Size": bytes(result.rle.actualBytes),
+    "Huffman Estimated Export Size": bytes(result.huffman.actualBytes),
+    "Compression Ratio RLE": decimal(result.rle.compressionMetrics.compressionRatio, 4),
+    "Compression Ratio Huffman": decimal(result.huffman.compressionMetrics.compressionRatio, 4),
+    "Space Saving RLE": percent(result.rle.compressionMetrics.spaceSavingPercent),
+    "Space Saving Huffman": percent(result.huffman.compressionMetrics.spaceSavingPercent),
     "Reconstruction MSE Kuantisasi": decimal(result.quantReconstructionQuality.mse, 6),
     "Reconstruction PSNR Kuantisasi": psnrLabel(result.quantReconstructionQuality.psnr),
     "Reconstruction MSE RLE": decimal(result.rle.reconstructionQuality.mse, 6),
@@ -1850,12 +1901,151 @@ function buildMultiLevelRow(no, item, levelValue, result) {
     "Waktu Kuantisasi": milliseconds(result.quantTiming.quantizationMs),
     "Waktu RLE Encode": milliseconds(result.rle.timing.encodeMs),
     "Waktu RLE Decode": milliseconds(result.rle.timing.decodeMs),
+    "Waktu RLE Inverse Quantization": milliseconds(result.rle.timing.inverseQuantizationMs),
+    "Waktu RLE Validasi": milliseconds(result.rle.timing.validationMs),
     "Waktu Huffman Encode": milliseconds(result.huffman.timing.encodeMs),
+    "Waktu Huffman Frequency": milliseconds(result.huffman.timing.frequencyTableMs),
+    "Waktu Huffman Tree": milliseconds(result.huffman.timing.treeBuildMs),
+    "Waktu Huffman Codebook": milliseconds(result.huffman.timing.codebookBuildMs),
+    "Waktu Huffman Bitstream": milliseconds(result.huffman.timing.bitstreamEncodeMs),
+    "Waktu Huffman Packing": milliseconds(result.huffman.timing.bitPackingMs),
     "Waktu Huffman Decode": milliseconds(result.huffman.timing.decodeMs),
+    "Waktu Huffman Inverse Quantization": milliseconds(result.huffman.timing.inverseQuantizationMs),
+    "Waktu Huffman Validasi": milliseconds(result.huffman.timing.validationMs),
     "Total Waktu RLE": milliseconds(result.rle.timing.totalMs),
     "Total Waktu Huffman": milliseconds(result.huffman.timing.totalMs),
     "Best Method": bestMethod,
     Status: result.rle.identical && result.huffman.identical ? "Valid" : "Perlu cek decode",
+  };
+}
+
+function buildRawNumericResearchRow(result) {
+  const resolution = result.resolutionInfo;
+  return {
+    image_name: result.file.name,
+    source_file_size_bytes: result.file.size,
+    source_width: resolution.sourceWidth,
+    source_height: resolution.sourceHeight,
+    source_pixel_count: resolution.sourcePixelCount,
+    working_width: resolution.workingWidth,
+    working_height: resolution.workingHeight,
+    working_pixel_count: resolution.workingPixelCount,
+    was_resized: resolution.wasResized,
+    resize_scale: resolution.resizeScale,
+    processing_mode: resolution.processingMode,
+    raw_source_grayscale_size_bits: result.rawSourceGrayscaleBits,
+    raw_working_grayscale_size_bits: result.rawWorkingGrayscaleBits,
+    quantized_size_bits: result.quantization.theoreticalBits,
+    rle_payload_bits: result.rle.theoreticalBits,
+    huffman_payload_bits: result.huffman.payloadBits,
+    rle_estimated_export_bytes: result.rle.actualBytes,
+    huffman_estimated_export_bytes: result.huffman.actualBytes,
+    rle_compression_ratio: result.rle.compressionMetrics.compressionRatio,
+    huffman_compression_ratio: result.huffman.compressionMetrics.compressionRatio,
+    rle_space_saving_percent: result.rle.compressionMetrics.spaceSavingPercent,
+    huffman_space_saving_percent: result.huffman.compressionMetrics.spaceSavingPercent,
+    reconstruction_mse: result.primaryReconstructionMetrics.mse,
+    reconstruction_psnr_db: result.primaryReconstructionMetrics.psnr,
+    rle_roundtrip_mse: result.rle.roundTripValidation.mse,
+    rle_roundtrip_psnr_db: result.rle.roundTripValidation.psnr,
+    rle_pixel_difference_count: result.rle.roundTripValidation.differentPixelCount,
+    rle_max_absolute_difference: result.rle.roundTripValidation.maxAbsoluteDifference,
+    rle_checksum_before: result.rle.roundTripValidation.checksumBefore,
+    rle_checksum_after: result.rle.roundTripValidation.checksumAfter,
+    rle_byte_identical: result.rle.roundTripValidation.isByteIdentical,
+    huffman_roundtrip_mse: result.huffman.roundTripValidation.mse,
+    huffman_roundtrip_psnr_db: result.huffman.roundTripValidation.psnr,
+    huffman_pixel_difference_count: result.huffman.roundTripValidation.differentPixelCount,
+    huffman_max_absolute_difference: result.huffman.roundTripValidation.maxAbsoluteDifference,
+    huffman_checksum_before: result.huffman.roundTripValidation.checksumBefore,
+    huffman_checksum_after: result.huffman.roundTripValidation.checksumAfter,
+    huffman_byte_identical: result.huffman.roundTripValidation.isByteIdentical,
+    quantization_time_ms: result.quantTiming.quantizationMs,
+    rle_encode_ms: result.rle.timing.encodeMs,
+    rle_decode_ms: result.rle.timing.decodeMs,
+    rle_inverse_quantization_ms: result.rle.timing.inverseQuantizationMs,
+    rle_validation_ms: result.rle.timing.validationMs,
+    rle_total_ms: result.rle.timing.totalMs,
+    huffman_frequency_ms: result.huffman.timing.frequencyTableMs,
+    huffman_tree_build_ms: result.huffman.timing.treeBuildMs,
+    huffman_codebook_ms: result.huffman.timing.codebookBuildMs,
+    huffman_bitstream_encode_ms: result.huffman.timing.bitstreamEncodeMs,
+    huffman_pack_ms: result.huffman.timing.bitPackingMs,
+    huffman_decode_ms: result.huffman.timing.decodeMs,
+    huffman_inverse_quantization_ms: result.huffman.timing.inverseQuantizationMs,
+    huffman_validation_ms: result.huffman.timing.validationMs,
+    huffman_total_ms: result.huffman.timing.totalMs,
+    quantization_status: "PROCESSED",
+    skipped_reason: "",
+    rle_result_category: classifyCompression(result.rle.compressionMetrics.compressionRatio),
+    huffman_result_category: classifyCompression(result.huffman.compressionMetrics.compressionRatio),
+  };
+}
+
+function buildSkippedRawNumericResearchRow(item, levelValue, skippedReason = buildSkippedReason()) {
+  const resolution = item.decoded?.resolutionInfo ?? {};
+  const sourceProfile = item.sourceProfile ?? {};
+  const sourcePixelCount = resolution.sourcePixelCount ?? ((resolution.sourceWidth ?? 0) * (resolution.sourceHeight ?? 0));
+  const workingPixelCount = resolution.workingPixelCount ?? ((resolution.workingWidth ?? 0) * (resolution.workingHeight ?? 0));
+  return {
+    image_name: item.fileInfo.name,
+    source_file_size_bytes: item.fileInfo.size,
+    source_width: resolution.sourceWidth ?? "",
+    source_height: resolution.sourceHeight ?? "",
+    source_pixel_count: sourcePixelCount || "",
+    working_width: resolution.workingWidth ?? "",
+    working_height: resolution.workingHeight ?? "",
+    working_pixel_count: workingPixelCount || "",
+    was_resized: Boolean(resolution.wasResized),
+    resize_scale: resolution.resizeScale ?? "",
+    processing_mode: resolution.processingMode ?? "",
+    raw_source_grayscale_size_bits: sourcePixelCount && sourceProfile.bitsPerPixel ? sourcePixelCount * sourceProfile.bitsPerPixel : "",
+    raw_working_grayscale_size_bits: workingPixelCount && sourceProfile.bitsPerPixel ? workingPixelCount * sourceProfile.bitsPerPixel : "",
+    quantized_size_bits: "",
+    rle_payload_bits: "",
+    huffman_payload_bits: "",
+    rle_estimated_export_bytes: "",
+    huffman_estimated_export_bytes: "",
+    rle_compression_ratio: "",
+    huffman_compression_ratio: "",
+    rle_space_saving_percent: "",
+    huffman_space_saving_percent: "",
+    reconstruction_mse: "",
+    reconstruction_psnr_db: "",
+    rle_roundtrip_mse: "",
+    rle_roundtrip_psnr_db: "",
+    rle_pixel_difference_count: "",
+    rle_max_absolute_difference: "",
+    rle_checksum_before: "",
+    rle_checksum_after: "",
+    rle_byte_identical: false,
+    huffman_roundtrip_mse: "",
+    huffman_roundtrip_psnr_db: "",
+    huffman_pixel_difference_count: "",
+    huffman_max_absolute_difference: "",
+    huffman_checksum_before: "",
+    huffman_checksum_after: "",
+    huffman_byte_identical: false,
+    quantization_time_ms: "",
+    rle_encode_ms: "",
+    rle_decode_ms: "",
+    rle_inverse_quantization_ms: "",
+    rle_validation_ms: "",
+    rle_total_ms: "",
+    huffman_frequency_ms: "",
+    huffman_tree_build_ms: "",
+    huffman_codebook_ms: "",
+    huffman_bitstream_encode_ms: "",
+    huffman_pack_ms: "",
+    huffman_decode_ms: "",
+    huffman_inverse_quantization_ms: "",
+    huffman_validation_ms: "",
+    huffman_total_ms: "",
+    quantization_status: "SKIPPED",
+    skipped_reason: skippedReason,
+    rle_result_category: "SKIPPED",
+    huffman_result_category: "SKIPPED",
+    requested_level: levelValue,
   };
 }
 
@@ -1866,8 +2056,10 @@ function columnsForAnalysisView(view) {
     "Nama Citra",
     "Tahap",
     "Level Kuantisasi",
-    "Ukuran Data Mentah",
-    "Ukuran Kompresi",
+    "Quantized Fixed-bit Size",
+    "RLE Theoretical Payload",
+    "Huffman Theoretical Payload",
+    "Estimated Export Size",
     "Waktu Encode",
     "Waktu Decode",
     "Waktu Total",
@@ -1892,6 +2084,10 @@ function multiLevelColumnsFor(tab) {
       "Reconstruction PSNR RLE",
       "Reconstruction MSE Huffman",
       "Reconstruction PSNR Huffman",
+      "Round-trip MSE RLE",
+      "Round-trip PSNR RLE",
+      "Round-trip MSE Huffman",
+      "Round-trip PSNR Huffman",
       "Status",
     ];
   }
@@ -1901,8 +2097,17 @@ function multiLevelColumnsFor(tab) {
       "Waktu Kuantisasi",
       "Waktu RLE Encode",
       "Waktu RLE Decode",
+      "Waktu RLE Inverse Quantization",
+      "Waktu RLE Validasi",
       "Waktu Huffman Encode",
+      "Waktu Huffman Frequency",
+      "Waktu Huffman Tree",
+      "Waktu Huffman Codebook",
+      "Waktu Huffman Bitstream",
+      "Waktu Huffman Packing",
       "Waktu Huffman Decode",
+      "Waktu Huffman Inverse Quantization",
+      "Waktu Huffman Validasi",
       "Total Waktu RLE",
       "Total Waktu Huffman",
       "Best Method",
@@ -1911,9 +2116,12 @@ function multiLevelColumnsFor(tab) {
   return [
     "Quantization Level",
     "Bit per Piksel",
-    "Quantized Size",
-    "RLE Size",
-    "Huffman Size",
+    "Raw Working Grayscale Size",
+    "Quantized Fixed-bit Size",
+    "RLE Theoretical Payload",
+    "Huffman Theoretical Payload",
+    "RLE Estimated Export Size",
+    "Huffman Estimated Export Size",
     "Compression Ratio RLE",
     "Compression Ratio Huffman",
     "Space Saving RLE",
@@ -1937,9 +2145,12 @@ function metricTooltip(column) {
   const hints = {
     "Quantization Level": "Jumlah level grayscale target yang diuji.",
     "Bit per Piksel": "ceil(log2(level)) untuk kode kuantisasi.",
-    "Quantized Size": "Ukuran teoritis hasil kuantisasi pada resolusi kerja.",
-    "RLE Size": "Ukuran teoritis payload RLE.",
-    "Huffman Size": "Ukuran teoritis payload Huffman.",
+    "Raw Working Grayscale Size": "Ukuran grayscale mentah pada resolusi kerja dan bit-depth sumber efektif.",
+    "Quantized Fixed-bit Size": "Ukuran teoritis hasil kuantisasi pada resolusi kerja.",
+    "RLE Theoretical Payload": "Payload teoritis RLE, tidak termasuk seluruh metadata dan struktur file.",
+    "Huffman Theoretical Payload": "Payload teoritis Huffman, tidak termasuk seluruh metadata dan struktur file.",
+    "RLE Estimated Export Size": "Estimasi ukuran export JSON, bukan format biner optimal.",
+    "Huffman Estimated Export Size": "Estimasi ukuran export JSON, bukan format biner optimal.",
     "Compression Ratio RLE": "Ukuran input algoritmik dibagi ukuran RLE.",
     "Compression Ratio Huffman": "Ukuran input algoritmik dibagi ukuran Huffman.",
     "Space Saving RLE": "(1 - RLE/input) x 100%.",
@@ -2281,6 +2492,74 @@ async function decodeTiff(file, processingMode = "optimized") {
   };
 }
 
+function encodeHuffmanWithTiming(codes, symbolCount) {
+  const frequencyStart = performance.now();
+  const frequencies = buildFrequencyTable(codes, symbolCount);
+  const frequencyTableMs = performance.now() - frequencyStart;
+
+  const treeStart = performance.now();
+  const { root, mergeHistory } = buildHuffmanTree(frequencies);
+  const treeBuildMs = performance.now() - treeStart;
+
+  const codebookStart = performance.now();
+  const codebook = buildHuffmanCodebook(root);
+  const codebookBuildMs = performance.now() - codebookStart;
+
+  const bitstreamStart = performance.now();
+  let bitString = "";
+  for (const code of codes) bitString += codebook.get(code);
+  const bitstreamEncodeMs = performance.now() - bitstreamStart;
+
+  const packStart = performance.now();
+  const packed = packBits(bitString);
+  const bitPackingMs = performance.now() - packStart;
+
+  const total = codes.length;
+  const codeEntries = frequencies.map((frequency, symbol) => {
+    const code = codebook.get(symbol) ?? null;
+    const codeLength = code ? code.length : 0;
+    return {
+      symbol,
+      frequency,
+      probability: frequency / total,
+      code,
+      codeLength,
+      totalBits: frequency * codeLength,
+    };
+  });
+  const payloadBits = codeEntries.reduce((sum, entry) => sum + entry.totalBits, 0);
+  const averageLength = payloadBits / total;
+  const entropy = codeEntries.reduce((sum, entry) => {
+    if (entry.frequency === 0) return sum;
+    return sum - entry.probability * Math.log2(entry.probability);
+  }, 0);
+
+  return {
+    root,
+    frequencies,
+    codebook,
+    codeEntries,
+    mergeHistory,
+    packed,
+    bitString,
+    payloadBits,
+    payloadBytes: packed.bytes.length,
+    averageLength,
+    entropy,
+    efficiency: averageLength > 0 ? (entropy / averageLength) * 100 : 0,
+    symbolCount,
+    pixelCount: codes.length,
+    timing: {
+      frequencyTableMs,
+      treeBuildMs,
+      codebookBuildMs,
+      bitstreamEncodeMs,
+      bitPackingMs,
+      encodeMs: frequencyTableMs + treeBuildMs + codebookBuildMs + bitstreamEncodeMs + bitPackingMs,
+    },
+  };
+}
+
 function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
   const grayStart = performance.now();
   const gray = toGrayscale(decoded.rgba, decoded.width, decoded.height);
@@ -2288,7 +2567,7 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
 
   const detectedProfile = sourceProfile ?? analyzeSourceQuantization(gray);
   if (level >= detectedProfile.estimatedLevel) {
-    throw new Error(`Level kuantisasi ${level} tidak valid. Citra sumber terdeteksi sekitar ${detectedProfile.estimatedLevel} level, sehingga kuantisasi harus memilih level yang lebih kecil.`);
+    throw new Error(`SKIPPED: level kuantisasi ${level} tidak diproses. ${buildSkippedReason()}`);
   }
 
   const quantStart = performance.now();
@@ -2297,7 +2576,14 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
   const quantizedCodes = quantization.codes;
   const sourceRawBits = quantizedCodes.length * quantization.quantizedBitDepth;
   const quantInputBits = gray.length * detectedProfile.bitsPerPixel;
-  const quantMetrics = computeMetrics(gray, quantization.reconstructed, quantInputBits, quantization.theoreticalBits);
+  const rawSourceGrayscaleBits = decoded.originalWidth * decoded.originalHeight * detectedProfile.bitsPerPixel;
+  const rawWorkingGrayscaleBits = gray.length * detectedProfile.bitsPerPixel;
+  const quantCompressionMetrics = buildCompressionMetrics({
+    inputBits: quantInputBits,
+    compressedBits: quantization.theoreticalBits,
+    baselineType: "working-grayscale",
+    baselineLabel: "Working grayscale effective bit-depth vs quantized fixed-bit data",
+  });
   const quantReconstructionQuality = buildReconstructionQualityMetrics(gray, quantization.reconstructed);
   const quantizedChecksum = dataChecksum(quantizedCodes);
 
@@ -2307,15 +2593,19 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
   const rleDecodeStart = performance.now();
   const rleDecodedCodes = decodeRLEMatrix(rleEncoded);
   const rleDecodeMs = performance.now() - rleDecodeStart;
-  const rleReconstructionStart = performance.now();
+  const rleInverseStart = performance.now();
   const rleReconstructed = inverseQuantization(rleDecodedCodes, quantization.groups);
-  const rleReconstructionMs = performance.now() - rleReconstructionStart;
+  const rleInverseQuantizationMs = performance.now() - rleInverseStart;
   const rleValidationStart = performance.now();
-  const rleCodeMetrics = computeMetrics(quantizedCodes, rleDecodedCodes, sourceRawBits, rleEncoded.theoreticalBits);
-  const rleReconstructionMetrics = computeMetrics(gray, rleReconstructed, sourceRawBits, rleEncoded.theoreticalBits);
-  const rleReconstructionQuality = buildReconstructionQualityMetrics(gray, rleReconstructed);
+  const rleReconstructionQuality = buildReconstructionQualityForTarget(gray, rleReconstructed, "rle-reconstruction");
   const rleRoundTripValidation = buildRoundTripValidationMetrics(quantizedCodes, rleDecodedCodes, quantizedChecksum);
   const rleValidationMs = performance.now() - rleValidationStart;
+  const rleCompressionMetrics = buildCompressionMetrics({
+    inputBits: sourceRawBits,
+    compressedBits: rleEncoded.theoreticalBits,
+    baselineType: "quantized-fixed-bit",
+    baselineLabel: "Quantized fixed-bit data vs RLE theoretical payload",
+  });
   const rleActualBytes = estimateActualBytes({
     format: "RLE",
     width: decoded.width,
@@ -2336,36 +2626,38 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
     decodedChecksum: dataChecksum(rleDecodedCodes),
     identical: arraysEqual(quantizedCodes, rleDecodedCodes),
     roundTripStatus: arraysEqual(quantizedCodes, rleDecodedCodes) ? "OK" : "Gagal",
-    codeMetrics: rleCodeMetrics,
-    reconstructionMetrics: rleReconstructionMetrics,
+    compressionMetrics: rleCompressionMetrics,
     reconstructionQuality: rleReconstructionQuality,
     roundTripValidation: rleRoundTripValidation,
-    metrics: computeMetrics(quantizedCodes, rleDecodedCodes, sourceRawBits, rleEncoded.theoreticalBits),
     timing: {
       encodeMs: rleEncodeMs,
       decodeMs: rleDecodeMs,
-      reconstructionMs: rleReconstructionMs,
+      inverseQuantizationMs: rleInverseQuantizationMs,
+      reconstructionMs: rleInverseQuantizationMs,
       validationMs: rleValidationMs,
-      totalMs: rleEncodeMs + rleDecodeMs + rleReconstructionMs + rleValidationMs,
+      totalMs: rleEncodeMs + rleDecodeMs + rleInverseQuantizationMs + rleValidationMs,
     },
     actualBytes: rleActualBytes,
   };
 
-  const huffmanEncodeStart = performance.now();
-  const huffmanEncoded = encodeHuffmanCore(quantizedCodes, level);
-  const huffmanEncodeMs = performance.now() - huffmanEncodeStart;
+  const huffmanEncoded = encodeHuffmanWithTiming(quantizedCodes, level);
+  const huffmanEncodeMs = huffmanEncoded.timing.encodeMs;
   const huffmanDecodeStart = performance.now();
   const huffmanDecodedCodes = decodeHuffmanCore(huffmanEncoded, quantizedCodes.length);
   const huffmanDecodeMs = performance.now() - huffmanDecodeStart;
-  const huffmanReconstructionStart = performance.now();
+  const huffmanInverseStart = performance.now();
   const huffmanReconstructed = inverseQuantization(huffmanDecodedCodes, quantization.groups);
-  const huffmanReconstructionMs = performance.now() - huffmanReconstructionStart;
+  const huffmanInverseQuantizationMs = performance.now() - huffmanInverseStart;
   const huffmanValidationStart = performance.now();
-  const huffmanCodeMetrics = computeMetrics(quantizedCodes, huffmanDecodedCodes, sourceRawBits, huffmanEncoded.payloadBits);
-  const huffmanReconstructionMetrics = computeMetrics(gray, huffmanReconstructed, sourceRawBits, huffmanEncoded.payloadBits);
-  const huffmanReconstructionQuality = buildReconstructionQualityMetrics(gray, huffmanReconstructed);
+  const huffmanReconstructionQuality = buildReconstructionQualityForTarget(gray, huffmanReconstructed, "huffman-reconstruction");
   const huffmanRoundTripValidation = buildRoundTripValidationMetrics(quantizedCodes, huffmanDecodedCodes, quantizedChecksum);
   const huffmanValidationMs = performance.now() - huffmanValidationStart;
+  const huffmanCompressionMetrics = buildCompressionMetrics({
+    inputBits: sourceRawBits,
+    compressedBits: huffmanEncoded.payloadBits,
+    baselineType: "quantized-fixed-bit",
+    baselineLabel: "Quantized fixed-bit data vs Huffman theoretical payload",
+  });
   const huffmanActualBytes = estimateActualBytes({
     format: "Huffman",
     width: decoded.width,
@@ -2385,19 +2677,21 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
     decodedChecksum: dataChecksum(huffmanDecodedCodes),
     identical: arraysEqual(quantizedCodes, huffmanDecodedCodes),
     roundTripStatus: arraysEqual(quantizedCodes, huffmanDecodedCodes) ? "OK" : "Gagal",
-    codeMetrics: huffmanCodeMetrics,
-    reconstructionMetrics: huffmanReconstructionMetrics,
+    compressionMetrics: huffmanCompressionMetrics,
     reconstructionQuality: huffmanReconstructionQuality,
     roundTripValidation: huffmanRoundTripValidation,
-    metrics: computeMetrics(quantizedCodes, huffmanDecodedCodes, sourceRawBits, huffmanEncoded.payloadBits),
     timing: {
-      frequencyTableMs: null,
-      treeBuildMs: null,
+      frequencyTableMs: huffmanEncoded.timing.frequencyTableMs,
+      treeBuildMs: huffmanEncoded.timing.treeBuildMs,
+      codebookBuildMs: huffmanEncoded.timing.codebookBuildMs,
+      bitstreamEncodeMs: huffmanEncoded.timing.bitstreamEncodeMs,
+      bitPackingMs: huffmanEncoded.timing.bitPackingMs,
       encodeMs: huffmanEncodeMs,
       decodeMs: huffmanDecodeMs,
-      reconstructionMs: huffmanReconstructionMs,
+      inverseQuantizationMs: huffmanInverseQuantizationMs,
+      reconstructionMs: huffmanInverseQuantizationMs,
       validationMs: huffmanValidationMs,
-      totalMs: huffmanEncodeMs + huffmanDecodeMs + huffmanReconstructionMs + huffmanValidationMs,
+      totalMs: huffmanEncodeMs + huffmanDecodeMs + huffmanInverseQuantizationMs + huffmanValidationMs,
     },
     actualBytes: huffmanActualBytes,
   };
@@ -2408,8 +2702,8 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
   const isComparisonMode = method === "Kuantisasi + Perbandingan RLE dan Huffman";
   const encodeMs = isComparisonMode ? rle.encodeMs + huffman.encodeMs : (primary === "RLE" ? rle.encodeMs : huffman.encodeMs);
   const decodeMs = isComparisonMode ? rle.decodeMs + huffman.decodeMs : (primary === "RLE" ? rle.decodeMs : huffman.decodeMs);
-  const finalMetrics = computeMetrics(gray, decompressed, sourceRawBits, compressedBits);
-  const reconstructionMetrics = computeMetrics(gray, quantization.reconstructed, sourceRawBits, quantization.theoreticalBits);
+  const primaryCompressionMetrics = primary === "RLE" ? rleCompressionMetrics : huffmanCompressionMetrics;
+  const primaryReconstructionMetrics = primary === "RLE" ? rleReconstructionQuality : huffmanReconstructionQuality;
   const images = {
     gray: grayToUrl(gray, decoded.width, decoded.height),
     quantized: grayToUrl(quantization.reconstructed, decoded.width, decoded.height),
@@ -2440,13 +2734,15 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
     },
     quantReconstructionQuality,
     quantInputBits,
-    quantMetrics,
+    rawSourceGrayscaleBits,
+    rawWorkingGrayscaleBits,
+    quantCompressionMetrics,
     rle,
     huffman,
     compression: { method, primary, sourceLevel: level, sourceRawBits, compressedBits, encodeMs, decodeMs },
     decompressed,
-    finalMetrics,
-    reconstructionMetrics,
+    primaryCompressionMetrics,
+    primaryReconstructionMetrics,
     images,
   };
 
@@ -2470,6 +2766,13 @@ function buildRows(ctx, outputMode) {
     Metode: ctx.compression.method,
   };
   const emptyMetrics = {
+    "Source File Size (Disk)": "-",
+    "Raw Source Grayscale Size": "-",
+    "Raw Working Grayscale Size": "-",
+    "Quantized Fixed-bit Size": "-",
+    "RLE Theoretical Payload": "-",
+    "Huffman Theoretical Payload": "-",
+    "Estimated Export Size": "-",
     "Waktu Total": "-",
     "Reconstruction MSE": "-",
     "Reconstruction PSNR": "-",
@@ -2489,10 +2792,9 @@ function buildRows(ctx, outputMode) {
     "Dimensi Pixel": `${ctx.decoded.originalWidth} x ${ctx.decoded.originalHeight} x 4`,
     "Jumlah Pixel": ctx.decoded.originalWidth * ctx.decoded.originalHeight,
     "Level Kuantisasi": "-",
-    "Ukuran File (Disk)": diskSizeText,
-    "Ukuran Data Mentah": bits(rawOriginalBits),
+    "Source File Size (Disk)": diskSizeText,
+    "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
     "Nilai Unik": uniqueCountRgba(ctx.decoded.rgba),
-    "Ukuran Kompresi": "-",
     "Jumlah Run": "-",
     "Waktu Encode": "-",
     "Waktu Decode": "-",
@@ -2506,10 +2808,10 @@ function buildRows(ctx, outputMode) {
     "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
     "Jumlah Pixel": ctx.working.pixels,
     "Level Kuantisasi": ctx.sourceProfile.estimatedLevel,
-    "Ukuran File (Disk)": diskSizeText,
-    "Ukuran Data Mentah": bits(ctx.gray.length * bitsForLevel(ctx.sourceProfile.estimatedLevel)),
+    "Source File Size (Disk)": diskSizeText,
+    "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
+    "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
     "Nilai Unik": uniqueCount(ctx.gray),
-    "Ukuran Kompresi": bits(ctx.gray.length * bitsForLevel(ctx.sourceProfile.estimatedLevel)),
     "Jumlah Run": "-",
     "Waktu Encode": seconds(ctx.working.grayMs),
     "Waktu Decode": "-",
@@ -2529,16 +2831,17 @@ function buildRows(ctx, outputMode) {
       "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
       "Jumlah Pixel": ctx.working.pixels,
       "Level Kuantisasi": ctx.quantization.levelCount,
-      "Ukuran File (Disk)": diskSizeText,
-      "Ukuran Data Mentah": bits(ctx.quantInputBits),
+      "Source File Size (Disk)": diskSizeText,
+      "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
+      "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
+      "Quantized Fixed-bit Size": bits(ctx.quantization.theoreticalBits),
       "Nilai Unik": uniqueCount(ctx.quantization.codes),
-      "Ukuran Kompresi": bits(ctx.quantization.theoreticalBits),
       "Jumlah Run": "-",
       "Waktu Encode": seconds(ctx.quantTiming.quantizationMs),
       "Waktu Decode": "-",
       "Waktu Total": seconds(ctx.quantTiming.totalMs),
-      "Compression Ratio": fixed(ctx.quantMetrics.cr),
-      "Space Saving (%)": fixed(ctx.quantMetrics.ss),
+      "Compression Ratio": fixed(ctx.quantCompressionMetrics.compressionRatio),
+      "Space Saving (%)": fixed(ctx.quantCompressionMetrics.spaceSavingPercent),
       "Reconstruction MSE": fixed(ctx.quantReconstructionQuality.mse, 6),
       "Reconstruction PSNR": psnrLabel(ctx.quantReconstructionQuality.psnr),
       "Status Validasi": "Lossy tahap kuantisasi",
@@ -2552,16 +2855,19 @@ function buildRows(ctx, outputMode) {
       "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
       "Jumlah Pixel": ctx.working.pixels,
       "Level Kuantisasi": ctx.compression.sourceLevel,
-      "Ukuran File (Disk)": diskSizeText,
-      "Ukuran Data Mentah": bits(ctx.compression.sourceRawBits),
+      "Source File Size (Disk)": diskSizeText,
+      "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
+      "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
+      "Quantized Fixed-bit Size": bits(ctx.compression.sourceRawBits),
+      "RLE Theoretical Payload": bits(ctx.rle.theoreticalBits),
+      "Estimated Export Size": bytes(ctx.rle.actualBytes),
       "Nilai Unik": uniqueCount(ctx.quantizedCodes),
-      "Ukuran Kompresi": bits(ctx.rle.theoreticalBits),
       "Jumlah Run": ctx.rle.pairCount,
       "Waktu Encode": seconds(ctx.rle.encodeMs),
       "Waktu Decode": seconds(ctx.rle.decodeMs),
       "Waktu Total": seconds(ctx.rle.timing.totalMs),
-      "Compression Ratio": fixed(ctx.rle.metrics.cr),
-      "Space Saving (%)": fixed(ctx.rle.metrics.ss),
+      "Compression Ratio": fixed(ctx.rle.compressionMetrics.compressionRatio),
+      "Space Saving (%)": fixed(ctx.rle.compressionMetrics.spaceSavingPercent),
       "Reconstruction MSE": fixed(ctx.rle.reconstructionQuality.mse, 6),
       "Reconstruction PSNR": psnrLabel(ctx.rle.reconstructionQuality.psnr),
       "Round-trip MSE": fixed(ctx.rle.roundTripValidation.mse, 6),
@@ -2581,16 +2887,19 @@ function buildRows(ctx, outputMode) {
       "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
       "Jumlah Pixel": ctx.working.pixels,
       "Level Kuantisasi": ctx.compression.sourceLevel,
-      "Ukuran File (Disk)": diskSizeText,
-      "Ukuran Data Mentah": bits(ctx.compression.sourceRawBits),
+      "Source File Size (Disk)": diskSizeText,
+      "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
+      "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
+      "Quantized Fixed-bit Size": bits(ctx.compression.sourceRawBits),
+      "Huffman Theoretical Payload": bits(ctx.huffman.payloadBits),
+      "Estimated Export Size": bytes(ctx.huffman.actualBytes),
       "Nilai Unik": ctx.huffman.codeEntries.filter((entry) => entry.frequency > 0).length,
-      "Ukuran Kompresi": bits(ctx.huffman.payloadBits),
       "Jumlah Run": "-",
       "Waktu Encode": seconds(ctx.huffman.encodeMs),
       "Waktu Decode": seconds(ctx.huffman.decodeMs),
       "Waktu Total": seconds(ctx.huffman.timing.totalMs),
-      "Compression Ratio": fixed(ctx.huffman.metrics.cr),
-      "Space Saving (%)": fixed(ctx.huffman.metrics.ss),
+      "Compression Ratio": fixed(ctx.huffman.compressionMetrics.compressionRatio),
+      "Space Saving (%)": fixed(ctx.huffman.compressionMetrics.spaceSavingPercent),
       "Reconstruction MSE": fixed(ctx.huffman.reconstructionQuality.mse, 6),
       "Reconstruction PSNR": psnrLabel(ctx.huffman.reconstructionQuality.psnr),
       "Round-trip MSE": fixed(ctx.huffman.roundTripValidation.mse, 6),
@@ -2612,16 +2921,19 @@ function buildRows(ctx, outputMode) {
     "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
     "Jumlah Pixel": ctx.working.pixels,
     "Level Kuantisasi": ctx.compression.sourceLevel,
-    "Ukuran File (Disk)": diskSizeText,
-    "Ukuran Data Mentah": bits(ctx.compression.sourceRawBits),
+    "Source File Size (Disk)": diskSizeText,
+    "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
+    "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
+    "Quantized Fixed-bit Size": bits(ctx.compression.sourceRawBits),
+    [ctx.compression.primary === "RLE" ? "RLE Theoretical Payload" : "Huffman Theoretical Payload"]: bits(ctx.compression.compressedBits),
+    "Estimated Export Size": bytes(ctx.compression.primary === "RLE" ? ctx.rle.actualBytes : ctx.huffman.actualBytes),
     "Nilai Unik": uniqueCount(ctx.decompressed),
-    "Ukuran Kompresi": bits(ctx.compression.compressedBits),
     "Jumlah Run": ctx.rle?.pairCount ?? "-",
     "Waktu Encode": includeFull ? "-" : seconds(ctx.compression.encodeMs),
     "Waktu Decode": seconds(ctx.compression.decodeMs),
     "Waktu Total": includeFull ? seconds(primaryTiming.decodeMs + primaryTiming.reconstructionMs + primaryTiming.validationMs) : seconds(primaryTiming.totalMs),
-    "Compression Ratio": fixed(ctx.finalMetrics.cr),
-    "Space Saving (%)": fixed(ctx.finalMetrics.ss),
+    "Compression Ratio": fixed(ctx.primaryCompressionMetrics.compressionRatio),
+    "Space Saving (%)": fixed(ctx.primaryCompressionMetrics.spaceSavingPercent),
     "Reconstruction MSE": fixed(primaryQuality.mse, 6),
     "Reconstruction PSNR": psnrLabel(primaryQuality.psnr),
     "Round-trip MSE": fixed(primaryValidation.mse, 6),
@@ -2640,16 +2952,19 @@ function buildRows(ctx, outputMode) {
       "Dimensi Pixel": `${ctx.working.width} x ${ctx.working.height}`,
       "Jumlah Pixel": ctx.working.pixels,
       "Level Kuantisasi": ctx.compression.sourceLevel,
-      "Ukuran File (Disk)": diskSizeText,
-      "Ukuran Data Mentah": bits(ctx.compression.sourceRawBits),
+      "Source File Size (Disk)": diskSizeText,
+      "Raw Source Grayscale Size": bits(ctx.rawSourceGrayscaleBits),
+      "Raw Working Grayscale Size": bits(ctx.rawWorkingGrayscaleBits),
+      "Quantized Fixed-bit Size": bits(ctx.compression.sourceRawBits),
+      [ctx.compression.primary === "RLE" ? "RLE Theoretical Payload" : "Huffman Theoretical Payload"]: bits(ctx.compression.compressedBits),
+      "Estimated Export Size": bytes(ctx.compression.primary === "RLE" ? ctx.rle.actualBytes : ctx.huffman.actualBytes),
       "Nilai Unik": uniqueCount(ctx.decompressed),
-      "Ukuran Kompresi": bits(ctx.compression.compressedBits),
       "Jumlah Run": ctx.rle?.pairCount ?? "-",
       "Waktu Encode": seconds(ctx.compression.encodeMs),
       "Waktu Decode": seconds(ctx.compression.decodeMs),
       "Waktu Total": seconds((ctx.compression.primary === "RLE" ? ctx.rle.timing.totalMs : ctx.huffman.timing.totalMs)),
-      "Compression Ratio": fixed(ctx.finalMetrics.cr),
-      "Space Saving (%)": fixed(ctx.finalMetrics.ss),
+      "Compression Ratio": fixed(ctx.primaryCompressionMetrics.compressionRatio),
+      "Space Saving (%)": fixed(ctx.primaryCompressionMetrics.spaceSavingPercent),
       "Reconstruction MSE": fixed(primaryQuality.mse, 6),
       "Reconstruction PSNR": psnrLabel(primaryQuality.psnr),
       "Round-trip MSE": fixed(primaryValidation.mse, 6),
@@ -2670,8 +2985,9 @@ function buildDetailReport(ctx, outputMode) {
   const lines = [];
   const rawOriginalBits = ctx.decoded.originalWidth * ctx.decoded.originalHeight * 4 * 8;
   const q = ctx.quantization;
-  const qMetrics = ctx.quantMetrics;
-  const final = ctx.finalMetrics;
+  const qMetrics = ctx.quantCompressionMetrics;
+  const finalCompression = ctx.primaryCompressionMetrics;
+  const finalReconstruction = ctx.primaryReconstructionMetrics;
   const huffmanInputBits = ctx.compression.sourceRawBits;
 
   lines.push("DETAIL RUMUS DAN PERHITUNGAN KOMPRESI CITRA");
@@ -2721,8 +3037,8 @@ function buildDetailReport(ctx, outputMode) {
   lines.push(`S_q = ${q.codes.length} x ${q.quantizedBitDepth} = ${q.theoreticalBits} bit`);
   lines.push("Tabel pengelompokan kuantisasi:");
   lines.push(...formatQuantizationGroups(q.groups));
-  lines.push(`CR_q = ${ctx.quantInputBits}/${q.theoreticalBits} = ${fixed(qMetrics.cr)}`);
-  lines.push(`SS_q = (1 - ${q.theoreticalBits}/${ctx.quantInputBits}) x 100% = ${fixed(qMetrics.ss)}%`);
+  lines.push(`CR_q = ${qMetrics.inputBits}/${qMetrics.compressedBits} = ${fixed(qMetrics.compressionRatio)}`);
+  lines.push(`SS_q = (1 - ${qMetrics.compressedBits}/${qMetrics.inputBits}) x 100% = ${fixed(qMetrics.spaceSavingPercent)}%`);
   lines.push(`Reconstruction MSE_q = ${fixed(ctx.quantReconstructionQuality.mse, 6)}`);
   lines.push(`Reconstruction PSNR_q = ${psnrLabel(ctx.quantReconstructionQuality.psnr)}`);
   lines.push(`Waktu kuantisasi = ${seconds(ctx.quantTiming.quantizationMs)}`);
@@ -2812,12 +3128,13 @@ function buildDetailReport(ctx, outputMode) {
   lines.push("Rumus: MSE = (1/(M x N)) x sum_x sum_y [I(x,y) - K(x,y)]^2");
   lines.push("Rumus: PSNR = 10 x log10(255^2 / MSE)");
   lines.push("Rumus setara: PSNR = 20 x log10(255 / sqrt(MSE))");
-  lines.push(`S_asli evaluasi = ${ctx.compression.sourceRawBits} bit`);
-  lines.push(`S_kompresi final = ${ctx.compression.compressedBits} bit`);
-  lines.push(`CR = ${ctx.compression.sourceRawBits}/${ctx.compression.compressedBits} = ${fixed(final.cr)}`);
-  lines.push(`SS = (1 - ${ctx.compression.compressedBits}/${ctx.compression.sourceRawBits}) x 100% = ${fixed(final.ss)}%`);
-  lines.push(`Reconstruction MSE final = ${fixed(final.mse, 6)}`);
-  lines.push(`Reconstruction PSNR final = ${psnrLabel(final.psnr)}`);
+  lines.push(`Baseline evaluasi = ${finalCompression.baselineLabel}`);
+  lines.push(`S_input evaluasi = ${finalCompression.inputBits} bit`);
+  lines.push(`S_kompresi final = ${finalCompression.compressedBits} bit`);
+  lines.push(`CR = ${finalCompression.inputBits}/${finalCompression.compressedBits} = ${fixed(finalCompression.compressionRatio)}`);
+  lines.push(`SS = (1 - ${finalCompression.compressedBits}/${finalCompression.inputBits}) x 100% = ${fixed(finalCompression.spaceSavingPercent)}%`);
+  lines.push(`Reconstruction MSE final = ${fixed(finalReconstruction.mse, 6)}`);
+  lines.push(`Reconstruction PSNR final = ${psnrLabel(finalReconstruction.psnr)}`);
   lines.push(`Waktu encode = ${seconds(ctx.compression.encodeMs)}`);
   lines.push(`Waktu decode = ${seconds(ctx.compression.decodeMs)}`);
   lines.push("");
@@ -3256,6 +3573,10 @@ function buildRleExport(result) {
     height: result.rle.height,
     levelCount: result.quantization.levelCount,
     resolutionInfo: result.resolutionInfo,
+    sourceFileSizeBytes: result.file.size,
+    rawSourceGrayscaleBits: result.rawSourceGrayscaleBits,
+    rawWorkingGrayscaleBits: result.rawWorkingGrayscaleBits,
+    quantizedFixedBitSizeBits: result.quantization.theoreticalBits,
     symbolBitWidth: result.rle.symbolBitWidth,
     countBitWidth: result.rle.countBitWidth,
     pairCount: result.rle.pairCount,
@@ -3265,6 +3586,7 @@ function buildRleExport(result) {
     checksumBefore: result.quantizedChecksum,
     checksumAfter: result.rle.decodedChecksum,
     roundTripStatus: result.rle.roundTripStatus,
+    compressionMetrics: result.rle.compressionMetrics,
     reconstructionQuality: result.rle.reconstructionQuality,
     roundTripValidation: result.rle.roundTripValidation,
     timing: result.rle.timing,
@@ -3280,6 +3602,10 @@ function buildHuffmanExport(result) {
     height: result.working.height,
     levelCount: result.quantization.levelCount,
     resolutionInfo: result.resolutionInfo,
+    sourceFileSizeBytes: result.file.size,
+    rawSourceGrayscaleBits: result.rawSourceGrayscaleBits,
+    rawWorkingGrayscaleBits: result.rawWorkingGrayscaleBits,
+    quantizedFixedBitSizeBits: result.quantization.theoreticalBits,
     bitLength: result.huffman.packed.bitLength,
     payloadBytes: result.huffman.payloadBytes,
     payloadBits: result.huffman.payloadBits,
@@ -3291,6 +3617,7 @@ function buildHuffmanExport(result) {
     checksumBefore: result.quantizedChecksum,
     checksumAfter: result.huffman.decodedChecksum,
     roundTripStatus: result.huffman.roundTripStatus,
+    compressionMetrics: result.huffman.compressionMetrics,
     reconstructionQuality: result.huffman.reconstructionQuality,
     roundTripValidation: result.huffman.roundTripValidation,
     timing: result.huffman.timing,

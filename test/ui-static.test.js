@@ -86,6 +86,9 @@ test("UI memisahkan kualitas rekonstruksi dan validasi round-trip", () => {
   assert.match(page, /Validasi Lossless \/ Round-trip/);
   assert.match(page, /buildReconstructionQualityMetrics/);
   assert.match(page, /buildRoundTripValidationMetrics/);
+  assert.doesNotMatch(page, /finalMetrics/);
+  assert.match(page, /primaryCompressionMetrics/);
+  assert.match(page, /primaryReconstructionMetrics/);
 });
 
 test("UI menjelaskan resolusi sumber dan resolusi kerja", () => {
@@ -93,6 +96,7 @@ test("UI menjelaskan resolusi sumber dan resolusi kerja", () => {
   assert.match(page, /Resolusi Pemrosesan/);
   assert.match(page, /Resolusi sumber/);
   assert.match(page, /Resolusi kerja/);
+  assert.match(page, /Seluruh ukuran algoritmik, MSE, PSNR, dan waktu proses dihitung berdasarkan resolusi kerja/);
   assert.match(css, /resolution-panel/);
   assert.match(css, /warning-note/);
 });
@@ -109,4 +113,35 @@ test("Tabel pasangan RLE tidak mengakses state evaluasi global", () => {
   const match = page.match(/function RlePairsTable[\s\S]*?function RleRowSummaryTable/);
   assert.ok(match, "komponen RlePairsTable harus ditemukan");
   assert.doesNotMatch(match[0], /result\./);
+});
+
+test("UI menyediakan CSV penelitian raw numeric dan label ukuran eksplisit", () => {
+  assert.match(page, /Unduh CSV Penelitian - Raw Numeric/);
+  for (const label of [
+    "Source File Size (Disk)",
+    "Raw Source Grayscale Size",
+    "Raw Working Grayscale Size",
+    "Quantized Fixed-bit Size",
+    "RLE Theoretical Payload",
+    "Huffman Theoretical Payload",
+    "Estimated Export Size",
+  ]) {
+    assert.match(page, new RegExp(label.replace(/[()]/g, "\\$&")));
+  }
+  assert.match(page, /Payload teoritis tidak termasuk seluruh metadata dan struktur file/);
+  assert.match(page, /Estimasi ukuran export JSON, bukan format biner optimal/);
+});
+
+test("Timing detail Huffman dan RLE tersimpan di model", () => {
+  for (const token of [
+    "frequencyTableMs",
+    "treeBuildMs",
+    "codebookBuildMs",
+    "bitstreamEncodeMs",
+    "bitPackingMs",
+    "inverseQuantizationMs",
+    "validationMs",
+  ]) {
+    assert.match(page, new RegExp(token));
+  }
 });
