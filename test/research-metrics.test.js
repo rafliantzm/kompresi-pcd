@@ -5,13 +5,21 @@ import {
   RESEARCH_SUMMARY_COLUMNS,
   buildBenchmarkSummary,
   buildCompressionMetrics,
+  buildDetectedFixedBitSizeBits,
+  buildGrayscaleRawSizeBits,
   buildReconstructionMetrics,
   buildRoundTripMetrics,
   buildSkippedReason,
   classifyCompression,
+  serializeAnomalySummaryCsv,
   serializeResearchSummaryCsv,
   serializeRawNumericCsv,
+  serializeSummaryByFormatCsv,
+  serializeTimingSummaryCsv,
+  summarizeAnomalyRows,
   summarizeResearchRows,
+  summarizeResearchRowsByFormat,
+  summarizeTimingRows,
 } from "../lib/research-metrics.js";
 
 function parseCsvLine(line) {
@@ -38,6 +46,8 @@ function parseCsvLine(line) {
 
 const NON_NUMERIC_RAW_COLUMNS = new Set([
   "image_name",
+  "source_format",
+  "content_category",
   "was_resized",
   "processing_mode",
   "checksum_before",
@@ -62,6 +72,8 @@ function filledRawNumericRow() {
   const row = Object.fromEntries(RAW_NUMERIC_COLUMNS.map((column) => [column, ""]));
   Object.assign(row, {
     image_name: "sample.png",
+    source_format: "PNG",
+    content_category: "nature",
     was_resized: true,
     processing_mode: "optimized",
     checksum_before: "abc",
@@ -129,10 +141,16 @@ test("raw numeric CSV memiliki BOM, banyak kolom, titik desimal, dan tanpa satua
   const row = Object.fromEntries(RAW_NUMERIC_COLUMNS.map((column) => [column, ""]));
   Object.assign(row, {
     image_name: "sample.png",
+    source_format: "PNG",
+    content_category: "nature",
     source_file_size_bytes: 1024,
     source_pixel_count: 12,
     working_pixel_count: 12,
+    detected_source_level: 64,
+    detected_source_bit_depth: 6,
+    detected_source_fixed_bit_size_bits: 72,
     quantization_level: 64,
+    raw_source_grayscale_size_bits: 96,
     raw_working_grayscale_size_bits: 96,
     rle_compression_ratio: 1.25,
     huffman_space_saving_percent: -3.5,
@@ -157,16 +175,24 @@ test("raw numeric CSV memiliki BOM, banyak kolom, titik desimal, dan tanpa satua
   assert.equal(headers.length, RAW_NUMERIC_COLUMNS.length);
   assert.equal(values.length, RAW_NUMERIC_COLUMNS.length);
   assert.equal(values[headers.indexOf("rle_compression_ratio")], "1.25");
+  assert.equal(values[headers.indexOf("source_format")], "PNG");
   assert.equal(values[headers.indexOf("huffman_space_saving_percent")], "-3.5");
   assert.equal(values[headers.indexOf("rle_byte_identical")], "true");
   assert.equal(values[headers.indexOf("huffman_byte_identical")], "false");
   assert.doesNotMatch(values[headers.indexOf("raw_working_grayscale_size_bits")], /bit|ms|%|,/);
   assert.equal(values[headers.indexOf("skipped_reason")], "line one line two");
-  for (const column of ["source_file_size_bytes", "source_pixel_count", "working_pixel_count", "quantization_level", "rle_compression_ratio", "huffman_space_saving_percent", "different_pixel_count"]) {
+  for (const column of ["source_file_size_bytes", "source_pixel_count", "working_pixel_count", "detected_source_level", "detected_source_bit_depth", "detected_source_fixed_bit_size_bits", "quantization_level", "rle_compression_ratio", "huffman_space_saving_percent", "different_pixel_count"]) {
     const value = values[headers.indexOf(column)];
     assert.ok(Number.isFinite(Number(value)), `${column} harus dapat dikonversi menjadi number`);
     assert.doesNotMatch(value, /[a-zA-Z%]/);
   }
+});
+
+test("grayscale raw size selalu pixel_count x 8 dan detected fixed-bit memakai detected bit depth", () => {
+  assert.equal(buildGrayscaleRawSizeBits(12), 96);
+  assert.equal(buildGrayscaleRawSizeBits(1200475), 9603800);
+  assert.equal(buildDetectedFixedBitSizeBits(12, 6), 72);
+  assert.notEqual(buildDetectedFixedBitSizeBits(12, 6), buildGrayscaleRawSizeBits(12));
 });
 
 test("semua kolom numerik raw CSV dapat dikonversi tanpa unit dan memakai titik desimal", () => {
@@ -189,6 +215,7 @@ test("semua kolom numerik raw CSV dapat dikonversi tanpa unit dan memakai titik 
 test("SKIPPED row tetap dapat diekspor untuk penelitian", () => {
   const skipped = Object.fromEntries(RAW_NUMERIC_COLUMNS.map((column) => [column, ""]));
   skipped.image_name = "skip.png";
+  skipped.source_format = "PNG";
   skipped.quantization_status = "SKIPPED";
   skipped.skipped_reason = buildSkippedReason();
   skipped.rle_result_category = "SKIPPED";
@@ -244,6 +271,8 @@ test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () 
   const rows = [
     {
       image_name: "a.png",
+      source_format: "PNG",
+      content_category: "nature",
       quantization_level: 64,
       quantization_status: "PROCESSED",
       rle_result_category: "REDUCED",
@@ -255,16 +284,24 @@ test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () 
       reconstruction_mse: 4,
       reconstruction_psnr_db: 30,
       benchmark_total_mean_ms: 10,
+      quantization_time_ms: 1,
+      rle_total_ms: 4,
+      huffman_total_ms: 5,
     },
     {
       image_name: "b.png",
+      source_format: "PNG",
+      content_category: "nature",
       quantization_level: 64,
       quantization_status: "SKIPPED",
       rle_result_category: "SKIPPED",
       huffman_result_category: "SKIPPED",
+      skipped_reason: buildSkippedReason(),
     },
     {
       image_name: "c.png",
+      source_format: "JPG/JPEG",
+      content_category: "texture",
       quantization_level: 64,
       quantization_status: "PROCESSED",
       rle_result_category: "UNCHANGED",
@@ -276,16 +313,28 @@ test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () 
       reconstruction_mse: 2,
       reconstruction_psnr_db: 35,
       benchmark_total_mean_ms: 20,
+      quantization_time_ms: 2,
+      rle_total_ms: 8,
+      huffman_total_ms: 10,
     },
   ];
   const [summary] = summarizeResearchRows(rows);
-  assert.equal(summary.reduced_count, 2);
-  assert.equal(summary.unchanged_count, 1);
-  assert.equal(summary.expanded_count, 1);
+  assert.equal(summary.processed_row_count, 2);
   assert.equal(summary.skipped_count, 1);
+  assert.equal(summary.rle_reduced_count, 1);
+  assert.equal(summary.rle_unchanged_count, 1);
+  assert.equal(summary.rle_expanded_count, 0);
+  assert.equal(summary.huffman_reduced_count, 1);
+  assert.equal(summary.huffman_unchanged_count, 0);
+  assert.equal(summary.huffman_expanded_count, 1);
+  assert.equal(summary.rle_reduced_count + summary.rle_unchanged_count + summary.rle_expanded_count, summary.processed_row_count);
+  assert.equal(summary.huffman_reduced_count + summary.huffman_unchanged_count + summary.huffman_expanded_count, summary.processed_row_count);
   assert.equal(summary.rle_mean_compression_ratio, 1.5);
   assert.equal(summary.mean_reconstruction_mse, 3);
-  assert.equal(summary.mean_total_time_ms, 15);
+  assert.equal(summary.mean_combined_experiment_time_ms, 15);
+  assert.equal(summary.mean_quantization_time_ms, 1.5);
+  assert.equal(summary.mean_rle_total_time_ms, 6);
+  assert.equal(summary.mean_huffman_total_time_ms, 7.5);
   assert.equal(summary.best_case_image, "c.png");
   assert.equal(summary.best_case_method, "Huffman");
   assert.equal(summary.worst_case_image, "a.png");
@@ -295,4 +344,27 @@ test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () 
   const [headerLine, dataLine] = csv.slice(1).split("\n");
   assert.equal(parseCsvLine(headerLine).length, RESEARCH_SUMMARY_COLUMNS.length);
   assert.equal(parseCsvLine(dataLine).length, RESEARCH_SUMMARY_COLUMNS.length);
+
+  const [formatSummary] = summarizeResearchRowsByFormat(rows);
+  const formatCsv = serializeSummaryByFormatCsv([formatSummary]);
+  assert.equal(parseCsvLine(formatCsv.slice(1).split("\n")[0]).includes("source_format"), true);
+
+  const anomalies = summarizeAnomalyRows(rows);
+  assert.ok(anomalies.some((row) => row.anomaly_type === "SKIPPED_LEVEL"));
+  assert.ok(anomalies.some((row) => row.anomaly_type === "HUFFMAN_EXPANDED"));
+  const anomalyCsv = serializeAnomalySummaryCsv(anomalies);
+  assert.equal(parseCsvLine(anomalyCsv.slice(1).split("\n")[0]).includes("anomaly_type"), true);
+
+  const timing = summarizeTimingRows(rows);
+  assert.equal(timing[0].mean_quantization_time_ms, 1.5);
+  const timingCsv = serializeTimingSummaryCsv(timing);
+  assert.equal(parseCsvLine(timingCsv.slice(1).split("\n")[0]).includes("mean_combined_experiment_time_ms"), true);
+});
+
+test("seluruh status skipped memiliki alasan", () => {
+  const rows = [
+    { image_name: "a.png", source_format: "PNG", quantization_level: 256, quantization_status: "SKIPPED", skipped_reason: buildSkippedReason(), rle_result_category: "SKIPPED", huffman_result_category: "SKIPPED" },
+    { image_name: "b.png", source_format: "PNG", quantization_level: 128, quantization_status: "PROCESSED", skipped_reason: "", rle_result_category: "REDUCED", huffman_result_category: "REDUCED" },
+  ];
+  assert.ok(rows.filter((row) => row.quantization_status === "SKIPPED").every((row) => row.skipped_reason));
 });

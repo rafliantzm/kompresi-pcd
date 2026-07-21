@@ -17,14 +17,22 @@ import {
 } from "../lib/compression-core.js";
 import {
   buildCompressionMetrics,
+  buildDetectedFixedBitSizeBits,
+  buildGrayscaleRawSizeBits,
   buildReconstructionMetrics,
   buildRoundTripMetrics,
   buildSkippedReason,
   buildBenchmarkSummary,
   classifyCompression,
+  serializeAnomalySummaryCsv,
   serializeRawNumericCsv,
   serializeResearchSummaryCsv,
+  serializeSummaryByFormatCsv,
+  serializeTimingSummaryCsv,
+  summarizeAnomalyRows,
   summarizeResearchRows,
+  summarizeResearchRowsByFormat,
+  summarizeTimingRows,
 } from "../lib/research-metrics.js";
 
 const LEVELS = [256, 128, 64, 32, 16, 8];
@@ -145,6 +153,7 @@ export default function Home() {
   const [level, setLevel] = useState(64);
   const [method, setMethod] = useState("Kuantisasi + Perbandingan RLE dan Huffman");
   const [processingMode, setProcessingMode] = useState("optimized");
+  const [contentCategory, setContentCategory] = useState("unlabeled");
   const [benchmarkMode, setBenchmarkMode] = useState(false);
   const [outputMode, setOutputMode] = useState("1. Alur Lengkap");
   const [showDetailAfterEval, setShowDetailAfterEval] = useState(false);
@@ -270,8 +279,8 @@ export default function Home() {
     setProcessingStage("Menjalankan pipeline kompresi");
     try {
       const next = benchmarkMode
-        ? runBenchmarkPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile)
-        : runPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile);
+        ? runBenchmarkPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile, contentCategory)
+        : runPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile, contentCategory);
       setResult(next);
       setShowDetail(showDetailAfterEval);
       setRlePage(0);
@@ -299,7 +308,25 @@ export default function Home() {
   function downloadResearchSummaryCsv() {
     const rawRows = getResearchRawRows(result, multiLevelRows);
     if (!rawRows.length) return;
-    downloadText(serializeResearchSummaryCsv(summarizeResearchRows(rawRows)), "research_summary.csv", "text/csv;charset=utf-8");
+    downloadText(serializeResearchSummaryCsv(summarizeResearchRows(rawRows)), "summary_by_level.csv", "text/csv;charset=utf-8");
+  }
+
+  function downloadSummaryByFormatCsv() {
+    const rawRows = getResearchRawRows(result, multiLevelRows);
+    if (!rawRows.length) return;
+    downloadText(serializeSummaryByFormatCsv(summarizeResearchRowsByFormat(rawRows)), "summary_by_format.csv", "text/csv;charset=utf-8");
+  }
+
+  function downloadAnomalySummaryCsv() {
+    const rawRows = getResearchRawRows(result, multiLevelRows);
+    if (!rawRows.length) return;
+    downloadText(serializeAnomalySummaryCsv(summarizeAnomalyRows(rawRows)), "anomaly_summary.csv", "text/csv;charset=utf-8");
+  }
+
+  function downloadTimingSummaryCsv() {
+    const rawRows = getResearchRawRows(result, multiLevelRows);
+    if (!rawRows.length) return;
+    downloadText(serializeTimingSummaryCsv(summarizeTimingRows(rawRows)), "timing_summary.csv", "text/csv;charset=utf-8");
   }
 
   function downloadDetail() {
@@ -325,7 +352,7 @@ export default function Home() {
           setMultiProgress(`${imageIndex + 1}/${validItems.length} citra, level ${levelValue}`);
           await yieldToBrowser();
           if (levelValue >= item.sourceProfile.estimatedLevel) {
-            rows.push(buildInvalidMultiLevelRow(no++, item, levelValue));
+            rows.push(buildInvalidMultiLevelRow(no++, item, levelValue, contentCategory));
             continue;
           }
           const testResult = (benchmarkMode ? runBenchmarkPipeline : runPipeline)(
@@ -335,6 +362,7 @@ export default function Home() {
             "Kuantisasi + Perbandingan RLE dan Huffman",
             "1. Alur Lengkap",
             item.sourceProfile,
+            contentCategory,
           );
           rows.push(buildMultiLevelRow(no++, item, levelValue, testResult));
           setMultiLevelRows([...rows]);
@@ -364,6 +392,7 @@ export default function Home() {
     setLevel(64);
     setMethod("Kuantisasi + Perbandingan RLE dan Huffman");
     setProcessingMode("optimized");
+    setContentCategory("unlabeled");
     setBenchmarkMode(false);
     setOutputMode("1. Alur Lengkap");
     setShowDetailAfterEval(false);
@@ -478,6 +507,17 @@ export default function Home() {
             <small className="help">Alur lengkap menampilkan setiap tahap, per citra memisahkan output utama.</small>
           </label>
 
+          <label className="field">
+            <span>Kategori Konten</span>
+            <input
+              type="text"
+              value={contentCategory}
+              onChange={(event) => setContentCategory(event.target.value)}
+              placeholder="mis. nature, portrait, document"
+            />
+            <small className="help">Metadata penelitian opsional; gunakan unlabeled jika belum diklasifikasi.</small>
+          </label>
+
           <label className="toggle">
             <input
               type="checkbox"
@@ -525,7 +565,10 @@ export default function Home() {
             <button type="button" className="secondary" onClick={downloadMultiLevelCsv} disabled={!multiLevelRows.length}>Unduh CSV Multi-Level</button>
             <button type="button" className="secondary" onClick={downloadCsv} disabled={!result}>Unduh CSV</button>
             <button type="button" className="secondary" onClick={downloadResearchCsv} disabled={!result && !multiLevelRows.length}>Unduh CSV Penelitian - Raw Numeric</button>
-            <button type="button" className="secondary" onClick={downloadResearchSummaryCsv} disabled={!result && !multiLevelRows.length}>Unduh CSV Ringkasan Penelitian</button>
+            <button type="button" className="secondary" onClick={downloadResearchSummaryCsv} disabled={!result && !multiLevelRows.length}>summary_by_level.csv</button>
+            <button type="button" className="secondary" onClick={downloadSummaryByFormatCsv} disabled={!result && !multiLevelRows.length}>summary_by_format.csv</button>
+            <button type="button" className="secondary" onClick={downloadAnomalySummaryCsv} disabled={!result && !multiLevelRows.length}>anomaly_summary.csv</button>
+            <button type="button" className="secondary" onClick={downloadTimingSummaryCsv} disabled={!result && !multiLevelRows.length}>timing_summary.csv</button>
             <button type="button" className="secondary" onClick={downloadDetail} disabled={!result}>Unduh Detail</button>
             <button type="button" className="secondary reset" onClick={resetApp}>Reset</button>
           </div>
@@ -865,17 +908,24 @@ function ResearchSummary({ rows, onDownload }) {
           <thead>
             <tr>
               <th>Level</th>
-              <th>Reduced</th>
-              <th>Unchanged</th>
-              <th>Expanded</th>
+              <th>Rows</th>
               <th>Skipped</th>
+              <th>RLE Reduced</th>
+              <th>RLE Unchanged</th>
+              <th>RLE Expanded</th>
+              <th>Huffman Reduced</th>
+              <th>Huffman Unchanged</th>
+              <th>Huffman Expanded</th>
               <th>Mean CR RLE</th>
               <th>Mean CR Huffman</th>
               <th>Mean SS RLE</th>
               <th>Mean SS Huffman</th>
               <th>Mean MSE</th>
               <th>Mean PSNR</th>
-              <th>Mean Time</th>
+              <th>Mean Quant Time</th>
+              <th>Mean RLE Time</th>
+              <th>Mean Huffman Time</th>
+              <th>Mean Combined Time</th>
               <th>Best Case</th>
               <th>Worst Case</th>
             </tr>
@@ -884,17 +934,24 @@ function ResearchSummary({ rows, onDownload }) {
             {rows.map((row) => (
               <tr key={row.quantization_level}>
                 <td>{row.quantization_level}</td>
-                <td>{row.reduced_count}</td>
-                <td>{row.unchanged_count}</td>
-                <td>{row.expanded_count}</td>
+                <td>{row.processed_row_count}</td>
                 <td>{row.skipped_count}</td>
+                <td>{row.rle_reduced_count}</td>
+                <td>{row.rle_unchanged_count}</td>
+                <td>{row.rle_expanded_count}</td>
+                <td>{row.huffman_reduced_count}</td>
+                <td>{row.huffman_unchanged_count}</td>
+                <td>{row.huffman_expanded_count}</td>
                 <td>{displayDecimal(row.rle_mean_compression_ratio, 4)}</td>
                 <td>{displayDecimal(row.huffman_mean_compression_ratio, 4)}</td>
                 <td>{displayPercent(row.rle_mean_space_saving_percent)}</td>
                 <td>{displayPercent(row.huffman_mean_space_saving_percent)}</td>
                 <td>{displayDecimal(row.mean_reconstruction_mse, 6)}</td>
                 <td>{displayPsnr(row.mean_reconstruction_psnr_db)}</td>
-                <td>{displayMilliseconds(row.mean_total_time_ms)}</td>
+                <td>{displayMilliseconds(row.mean_quantization_time_ms)}</td>
+                <td>{displayMilliseconds(row.mean_rle_total_time_ms)}</td>
+                <td>{displayMilliseconds(row.mean_huffman_total_time_ms)}</td>
+                <td>{displayMilliseconds(row.mean_combined_experiment_time_ms)}</td>
                 <td>{row.best_case_image ? `${row.best_case_method} ${decimal(row.best_case_compression_ratio, 4)} - ${row.best_case_image}` : "-"}</td>
                 <td>{row.worst_case_image ? `${row.worst_case_method} ${decimal(row.worst_case_compression_ratio, 4)} - ${row.worst_case_image}` : "-"}</td>
               </tr>
@@ -1895,12 +1952,13 @@ function buildDatasetRecap(items) {
   });
 }
 
-function buildInvalidMultiLevelRow(no, item, levelValue) {
+function buildInvalidMultiLevelRow(no, item, levelValue, contentCategory = "unlabeled") {
   const resolution = item.decoded?.resolutionInfo;
   const skippedReason = buildSkippedReason();
+  const itemWithCategory = { ...item, contentCategory };
   return {
     No: no,
-    __raw: buildSkippedRawNumericResearchRow(item, levelValue, skippedReason),
+    __raw: buildSkippedRawNumericResearchRow(itemWithCategory, levelValue, skippedReason),
     "Image Name": item.fileInfo.name,
     Format: datasetFormatKey(item.fileInfo.format),
     "Resolusi Sumber": resolution ? `${resolution.sourceWidth} x ${resolution.sourceHeight}` : "-",
@@ -2007,6 +2065,8 @@ function buildRawNumericResearchRow(result) {
   const benchmark = result.benchmarkSummary;
   return {
     image_name: result.file.name,
+    source_format: datasetFormatKey(result.file.format),
+    content_category: result.contentCategory,
     source_file_size_bytes: result.file.size,
     source_width: resolution.sourceWidth,
     source_height: resolution.sourceHeight,
@@ -2017,6 +2077,9 @@ function buildRawNumericResearchRow(result) {
     was_resized: resolution.wasResized,
     resize_scale: resolution.resizeScale,
     processing_mode: resolution.processingMode,
+    detected_source_level: result.sourceProfile.estimatedLevel,
+    detected_source_bit_depth: result.sourceProfile.bitsPerPixel,
+    detected_source_fixed_bit_size_bits: result.detectedSourceFixedBitSizeBits,
     quantization_level: result.quantization.levelCount,
     raw_source_grayscale_size_bits: result.rawSourceGrayscaleBits,
     raw_working_grayscale_size_bits: result.rawWorkingGrayscaleBits,
@@ -2089,6 +2152,8 @@ function buildSkippedRawNumericResearchRow(item, levelValue, skippedReason = bui
   const workingPixelCount = resolution.workingPixelCount ?? ((resolution.workingWidth ?? 0) * (resolution.workingHeight ?? 0));
   return {
     image_name: item.fileInfo.name,
+    source_format: datasetFormatKey(item.fileInfo.format),
+    content_category: normalizeContentCategory(item.contentCategory),
     source_file_size_bytes: item.fileInfo.size,
     source_width: resolution.sourceWidth ?? "",
     source_height: resolution.sourceHeight ?? "",
@@ -2099,9 +2164,12 @@ function buildSkippedRawNumericResearchRow(item, levelValue, skippedReason = bui
     was_resized: Boolean(resolution.wasResized),
     resize_scale: resolution.resizeScale ?? "",
     processing_mode: resolution.processingMode ?? "",
+    detected_source_level: sourceProfile.estimatedLevel ?? "",
+    detected_source_bit_depth: sourceProfile.bitsPerPixel ?? "",
+    detected_source_fixed_bit_size_bits: sourcePixelCount && sourceProfile.bitsPerPixel ? buildDetectedFixedBitSizeBits(sourcePixelCount, sourceProfile.bitsPerPixel) : "",
     quantization_level: levelValue,
-    raw_source_grayscale_size_bits: sourcePixelCount && sourceProfile.bitsPerPixel ? sourcePixelCount * sourceProfile.bitsPerPixel : "",
-    raw_working_grayscale_size_bits: workingPixelCount && sourceProfile.bitsPerPixel ? workingPixelCount * sourceProfile.bitsPerPixel : "",
+    raw_source_grayscale_size_bits: sourcePixelCount ? buildGrayscaleRawSizeBits(sourcePixelCount) : "",
+    raw_working_grayscale_size_bits: workingPixelCount ? buildGrayscaleRawSizeBits(workingPixelCount) : "",
     quantized_size_bits: "",
     rle_payload_bits: "",
     huffman_payload_bits: "",
@@ -2265,7 +2333,7 @@ function metricTooltip(column) {
   const hints = {
     "Quantization Level": "Jumlah level grayscale target yang diuji.",
     "Bit per Piksel": "ceil(log2(level)) untuk kode kuantisasi.",
-    "Raw Working Grayscale Size": "Ukuran grayscale mentah pada resolusi kerja dan bit-depth sumber efektif.",
+    "Raw Working Grayscale Size": "Ukuran grayscale mentah 8-bit pada resolusi kerja.",
     "Quantized Fixed-bit Size": "Ukuran teoritis hasil kuantisasi pada resolusi kerja.",
     "RLE Theoretical Payload": "Payload teoritis RLE, tidak termasuk seluruh metadata dan struktur file.",
     "Huffman Theoretical Payload": "Payload teoritis Huffman, tidak termasuk seluruh metadata dan struktur file.",
@@ -2289,6 +2357,11 @@ function datasetFormatKey(format) {
   if (value === "BMP") return "BMP";
   if (value === "TIF" || value === "TIFF") return "TIFF";
   return value || "UNKNOWN";
+}
+
+function normalizeContentCategory(value) {
+  const clean = String(value || "").trim();
+  return clean || "unlabeled";
 }
 
 function buildHistogramFromCodes(codes, levelCount) {
@@ -2680,13 +2753,13 @@ function encodeHuffmanWithTiming(codes, symbolCount) {
   };
 }
 
-function runBenchmarkPipeline(decoded, file, level, method, outputMode, sourceProfile) {
-  runPipeline(decoded, file, level, method, outputMode, sourceProfile);
+function runBenchmarkPipeline(decoded, file, level, method, outputMode, sourceProfile, contentCategory = "unlabeled") {
+  runPipeline(decoded, file, level, method, outputMode, sourceProfile, contentCategory);
   const measuredRuns = [];
   let finalResult = null;
   for (let run = 0; run < 5; run += 1) {
     const totalStart = performance.now();
-    const result = runPipeline(decoded, file, level, method, outputMode, sourceProfile);
+    const result = runPipeline(decoded, file, level, method, outputMode, sourceProfile, contentCategory);
     const totalMs = performance.now() - totalStart;
     measuredRuns.push({
       totalMs,
@@ -2704,7 +2777,7 @@ function runBenchmarkPipeline(decoded, file, level, method, outputMode, sourcePr
   };
 }
 
-function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
+function runPipeline(decoded, file, level, method, outputMode, sourceProfile, contentCategory = "unlabeled") {
   const grayStart = performance.now();
   const gray = toGrayscale(decoded.rgba, decoded.width, decoded.height);
   const grayMs = performance.now() - grayStart;
@@ -2720,8 +2793,9 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
   const quantizedCodes = quantization.codes;
   const sourceRawBits = quantizedCodes.length * quantization.quantizedBitDepth;
   const quantInputBits = gray.length * detectedProfile.bitsPerPixel;
-  const rawSourceGrayscaleBits = decoded.originalWidth * decoded.originalHeight * detectedProfile.bitsPerPixel;
-  const rawWorkingGrayscaleBits = gray.length * detectedProfile.bitsPerPixel;
+  const rawSourceGrayscaleBits = buildGrayscaleRawSizeBits(decoded.originalWidth * decoded.originalHeight);
+  const rawWorkingGrayscaleBits = buildGrayscaleRawSizeBits(gray.length);
+  const detectedSourceFixedBitSizeBits = buildDetectedFixedBitSizeBits(decoded.originalWidth * decoded.originalHeight, detectedProfile.bitsPerPixel);
   const quantCompressionMetrics = buildCompressionMetrics({
     inputBits: quantInputBits,
     compressedBits: quantization.theoreticalBits,
@@ -2858,6 +2932,7 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
 
   const context = {
     file,
+    contentCategory: normalizeContentCategory(contentCategory),
     decoded,
     resolutionInfo: decoded.resolutionInfo,
     working: { width: decoded.width, height: decoded.height, pixels: decoded.width * decoded.height, grayMs },
@@ -2880,6 +2955,7 @@ function runPipeline(decoded, file, level, method, outputMode, sourceProfile) {
     quantInputBits,
     rawSourceGrayscaleBits,
     rawWorkingGrayscaleBits,
+    detectedSourceFixedBitSizeBits,
     quantCompressionMetrics,
     rle,
     huffman,
