@@ -20,8 +20,11 @@ import {
   buildReconstructionMetrics,
   buildRoundTripMetrics,
   buildSkippedReason,
+  buildBenchmarkSummary,
   classifyCompression,
   serializeRawNumericCsv,
+  serializeResearchSummaryCsv,
+  summarizeResearchRows,
 } from "../lib/research-metrics.js";
 
 const LEVELS = [256, 128, 64, 32, 16, 8];
@@ -142,6 +145,7 @@ export default function Home() {
   const [level, setLevel] = useState(64);
   const [method, setMethod] = useState("Kuantisasi + Perbandingan RLE dan Huffman");
   const [processingMode, setProcessingMode] = useState("optimized");
+  const [benchmarkMode, setBenchmarkMode] = useState(false);
   const [outputMode, setOutputMode] = useState("1. Alur Lengkap");
   const [showDetailAfterEval, setShowDetailAfterEval] = useState(false);
   const [showDetail, setShowDetail] = useState(false);
@@ -160,6 +164,7 @@ export default function Home() {
     return buildDetailReport(result, outputMode);
   }, [result, outputMode]);
   const summaryStats = useMemo(() => buildSummaryStats(result), [result]);
+  const researchSummaryRows = useMemo(() => summarizeResearchRows(getResearchRawRows(result, multiLevelRows)), [result, multiLevelRows]);
 
   useEffect(() => {
     setMounted(true);
@@ -264,7 +269,9 @@ export default function Home() {
     setIsProcessing(true);
     setProcessingStage("Menjalankan pipeline kompresi");
     try {
-      const next = runPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile);
+      const next = benchmarkMode
+        ? runBenchmarkPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile)
+        : runPipeline(decoded, fileInfo, level, method, outputMode, sourceProfile);
       setResult(next);
       setShowDetail(showDetailAfterEval);
       setRlePage(0);
@@ -283,12 +290,16 @@ export default function Home() {
   }
 
   function downloadResearchCsv() {
-    const rawRows = multiLevelRows.length
-      ? multiLevelRows.map((row) => row.__raw).filter(Boolean)
-      : result ? [buildRawNumericResearchRow(result)] : [];
+    const rawRows = getResearchRawRows(result, multiLevelRows);
     if (!rawRows.length) return;
     const name = multiLevelRows.length ? "multi_level_research_raw_numeric.csv" : `${withoutExtension(result.file.name)}_research_raw_numeric.csv`;
     downloadText(serializeRawNumericCsv(rawRows), name, "text/csv;charset=utf-8");
+  }
+
+  function downloadResearchSummaryCsv() {
+    const rawRows = getResearchRawRows(result, multiLevelRows);
+    if (!rawRows.length) return;
+    downloadText(serializeResearchSummaryCsv(summarizeResearchRows(rawRows)), "research_summary.csv", "text/csv;charset=utf-8");
   }
 
   function downloadDetail() {
@@ -317,7 +328,7 @@ export default function Home() {
             rows.push(buildInvalidMultiLevelRow(no++, item, levelValue));
             continue;
           }
-          const testResult = runPipeline(
+          const testResult = (benchmarkMode ? runBenchmarkPipeline : runPipeline)(
             item.decoded,
             item.fileInfo,
             levelValue,
@@ -353,6 +364,7 @@ export default function Home() {
     setLevel(64);
     setMethod("Kuantisasi + Perbandingan RLE dan Huffman");
     setProcessingMode("optimized");
+    setBenchmarkMode(false);
     setOutputMode("1. Alur Lengkap");
     setShowDetailAfterEval(false);
     setShowDetail(false);
@@ -475,6 +487,15 @@ export default function Home() {
             <span>Tampilkan detail perhitungan setelah evaluasi</span>
           </label>
 
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={benchmarkMode}
+              onChange={(event) => setBenchmarkMode(event.target.checked)}
+            />
+            <span>Benchmark mode: 1 warm-up + 5 measured runs</span>
+          </label>
+
           <div className="source-card">
             <span>Level sumber terdeteksi</span>
             <strong>{sourceProfile ? `${sourceProfile.estimatedLevel} level` : "-"}</strong>
@@ -504,6 +525,7 @@ export default function Home() {
             <button type="button" className="secondary" onClick={downloadMultiLevelCsv} disabled={!multiLevelRows.length}>Unduh CSV Multi-Level</button>
             <button type="button" className="secondary" onClick={downloadCsv} disabled={!result}>Unduh CSV</button>
             <button type="button" className="secondary" onClick={downloadResearchCsv} disabled={!result && !multiLevelRows.length}>Unduh CSV Penelitian - Raw Numeric</button>
+            <button type="button" className="secondary" onClick={downloadResearchSummaryCsv} disabled={!result && !multiLevelRows.length}>Unduh CSV Ringkasan Penelitian</button>
             <button type="button" className="secondary" onClick={downloadDetail} disabled={!result}>Unduh Detail</button>
             <button type="button" className="secondary reset" onClick={resetApp}>Reset</button>
           </div>
@@ -517,6 +539,10 @@ export default function Home() {
 
         {(multiLevelRows.length > 0 || isMultiTesting) && (
           <MultiLevelResults rows={multiLevelRows} progress={multiProgress} isRunning={isMultiTesting} onDownload={downloadMultiLevelCsv} />
+        )}
+
+        {researchSummaryRows.length > 0 && (
+          <ResearchSummary rows={researchSummaryRows} onDownload={downloadResearchSummaryCsv} />
         )}
 
         {error && <div className="alert">{error}</div>}
@@ -821,6 +847,62 @@ function MultiLevelTable({ rows, columns }) {
         </tbody>
       </table>
     </div>
+  );
+}
+
+function ResearchSummary({ rows, onDownload }) {
+  return (
+    <section className="table-section">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Rekap Otomatis</p>
+          <h2>Ringkasan Penelitian</h2>
+        </div>
+        <button type="button" className="secondary" onClick={onDownload}>Unduh CSV Ringkasan Penelitian</button>
+      </div>
+      <div className="mini-table-wrap">
+        <table className="mini-table">
+          <thead>
+            <tr>
+              <th>Level</th>
+              <th>Reduced</th>
+              <th>Unchanged</th>
+              <th>Expanded</th>
+              <th>Skipped</th>
+              <th>Mean CR RLE</th>
+              <th>Mean CR Huffman</th>
+              <th>Mean SS RLE</th>
+              <th>Mean SS Huffman</th>
+              <th>Mean MSE</th>
+              <th>Mean PSNR</th>
+              <th>Mean Time</th>
+              <th>Best Case</th>
+              <th>Worst Case</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.quantization_level}>
+                <td>{row.quantization_level}</td>
+                <td>{row.reduced_count}</td>
+                <td>{row.unchanged_count}</td>
+                <td>{row.expanded_count}</td>
+                <td>{row.skipped_count}</td>
+                <td>{displayDecimal(row.rle_mean_compression_ratio, 4)}</td>
+                <td>{displayDecimal(row.huffman_mean_compression_ratio, 4)}</td>
+                <td>{displayPercent(row.rle_mean_space_saving_percent)}</td>
+                <td>{displayPercent(row.huffman_mean_space_saving_percent)}</td>
+                <td>{displayDecimal(row.mean_reconstruction_mse, 6)}</td>
+                <td>{displayPsnr(row.mean_reconstruction_psnr_db)}</td>
+                <td>{displayMilliseconds(row.mean_total_time_ms)}</td>
+                <td>{row.best_case_image ? `${row.best_case_method} ${decimal(row.best_case_compression_ratio, 4)} - ${row.best_case_image}` : "-"}</td>
+                <td>{row.worst_case_image ? `${row.worst_case_method} ${decimal(row.worst_case_compression_ratio, 4)} - ${row.worst_case_image}` : "-"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
@@ -1921,6 +2003,8 @@ function buildMultiLevelRow(no, item, levelValue, result) {
 
 function buildRawNumericResearchRow(result) {
   const resolution = result.resolutionInfo;
+  const primaryValidation = result.compression.primary === "RLE" ? result.rle.roundTripValidation : result.huffman.roundTripValidation;
+  const benchmark = result.benchmarkSummary;
   return {
     image_name: result.file.name,
     source_file_size_bytes: result.file.size,
@@ -1933,6 +2017,7 @@ function buildRawNumericResearchRow(result) {
     was_resized: resolution.wasResized,
     resize_scale: resolution.resizeScale,
     processing_mode: resolution.processingMode,
+    quantization_level: result.quantization.levelCount,
     raw_source_grayscale_size_bits: result.rawSourceGrayscaleBits,
     raw_working_grayscale_size_bits: result.rawWorkingGrayscaleBits,
     quantized_size_bits: result.quantization.theoreticalBits,
@@ -1946,6 +2031,11 @@ function buildRawNumericResearchRow(result) {
     huffman_space_saving_percent: result.huffman.compressionMetrics.spaceSavingPercent,
     reconstruction_mse: result.primaryReconstructionMetrics.mse,
     reconstruction_psnr_db: result.primaryReconstructionMetrics.psnr,
+    checksum_before: primaryValidation.checksumBefore,
+    checksum_after: primaryValidation.checksumAfter,
+    different_pixel_count: primaryValidation.differentPixelCount,
+    max_absolute_difference: primaryValidation.maxAbsoluteDifference,
+    byte_identical: primaryValidation.isByteIdentical,
     rle_roundtrip_mse: result.rle.roundTripValidation.mse,
     rle_roundtrip_psnr_db: result.rle.roundTripValidation.psnr,
     rle_pixel_difference_count: result.rle.roundTripValidation.differentPixelCount,
@@ -1975,6 +2065,16 @@ function buildRawNumericResearchRow(result) {
     huffman_inverse_quantization_ms: result.huffman.timing.inverseQuantizationMs,
     huffman_validation_ms: result.huffman.timing.validationMs,
     huffman_total_ms: result.huffman.timing.totalMs,
+    benchmark_enabled: Boolean(benchmark),
+    benchmark_warmup_runs: benchmark?.warmupRuns ?? 0,
+    benchmark_measured_runs: benchmark?.measuredRuns ?? 0,
+    benchmark_total_mean_ms: benchmark?.totalMeanMs ?? "",
+    benchmark_total_min_ms: benchmark?.totalMinMs ?? "",
+    benchmark_total_max_ms: benchmark?.totalMaxMs ?? "",
+    benchmark_total_std_ms: benchmark?.totalStdMs ?? "",
+    benchmark_quantization_mean_ms: benchmark?.quantizationMeanMs ?? "",
+    benchmark_rle_total_mean_ms: benchmark?.rleTotalMeanMs ?? "",
+    benchmark_huffman_total_mean_ms: benchmark?.huffmanTotalMeanMs ?? "",
     quantization_status: "PROCESSED",
     skipped_reason: "",
     rle_result_category: classifyCompression(result.rle.compressionMetrics.compressionRatio),
@@ -1999,6 +2099,7 @@ function buildSkippedRawNumericResearchRow(item, levelValue, skippedReason = bui
     was_resized: Boolean(resolution.wasResized),
     resize_scale: resolution.resizeScale ?? "",
     processing_mode: resolution.processingMode ?? "",
+    quantization_level: levelValue,
     raw_source_grayscale_size_bits: sourcePixelCount && sourceProfile.bitsPerPixel ? sourcePixelCount * sourceProfile.bitsPerPixel : "",
     raw_working_grayscale_size_bits: workingPixelCount && sourceProfile.bitsPerPixel ? workingPixelCount * sourceProfile.bitsPerPixel : "",
     quantized_size_bits: "",
@@ -2012,6 +2113,11 @@ function buildSkippedRawNumericResearchRow(item, levelValue, skippedReason = bui
     huffman_space_saving_percent: "",
     reconstruction_mse: "",
     reconstruction_psnr_db: "",
+    checksum_before: "",
+    checksum_after: "",
+    different_pixel_count: "",
+    max_absolute_difference: "",
+    byte_identical: false,
     rle_roundtrip_mse: "",
     rle_roundtrip_psnr_db: "",
     rle_pixel_difference_count: "",
@@ -2041,12 +2147,26 @@ function buildSkippedRawNumericResearchRow(item, levelValue, skippedReason = bui
     huffman_inverse_quantization_ms: "",
     huffman_validation_ms: "",
     huffman_total_ms: "",
+    benchmark_enabled: false,
+    benchmark_warmup_runs: 0,
+    benchmark_measured_runs: 0,
+    benchmark_total_mean_ms: "",
+    benchmark_total_min_ms: "",
+    benchmark_total_max_ms: "",
+    benchmark_total_std_ms: "",
+    benchmark_quantization_mean_ms: "",
+    benchmark_rle_total_mean_ms: "",
+    benchmark_huffman_total_mean_ms: "",
     quantization_status: "SKIPPED",
     skipped_reason: skippedReason,
     rle_result_category: "SKIPPED",
     huffman_result_category: "SKIPPED",
-    requested_level: levelValue,
   };
+}
+
+function getResearchRawRows(result, multiLevelRows) {
+  if (multiLevelRows.length) return multiLevelRows.map((row) => row.__raw).filter(Boolean);
+  return result ? [buildRawNumericResearchRow(result)] : [];
 }
 
 function columnsForAnalysisView(view) {
@@ -2557,6 +2677,30 @@ function encodeHuffmanWithTiming(codes, symbolCount) {
       bitPackingMs,
       encodeMs: frequencyTableMs + treeBuildMs + codebookBuildMs + bitstreamEncodeMs + bitPackingMs,
     },
+  };
+}
+
+function runBenchmarkPipeline(decoded, file, level, method, outputMode, sourceProfile) {
+  runPipeline(decoded, file, level, method, outputMode, sourceProfile);
+  const measuredRuns = [];
+  let finalResult = null;
+  for (let run = 0; run < 5; run += 1) {
+    const totalStart = performance.now();
+    const result = runPipeline(decoded, file, level, method, outputMode, sourceProfile);
+    const totalMs = performance.now() - totalStart;
+    measuredRuns.push({
+      totalMs,
+      quantizationMs: result.quantTiming.quantizationMs,
+      rleTotalMs: result.rle.timing.totalMs,
+      huffmanTotalMs: result.huffman.timing.totalMs,
+    });
+    finalResult = result;
+  }
+  const benchmarkSummary = buildBenchmarkSummary(measuredRuns);
+  return {
+    ...finalResult,
+    benchmarkSummary,
+    rows: buildRows({ ...finalResult, benchmarkSummary }, outputMode),
   };
 }
 
@@ -3530,12 +3674,28 @@ function decimal(value, digits = 4) {
   return Number.isFinite(value) ? value.toLocaleString("id-ID", { maximumFractionDigits: digits, minimumFractionDigits: digits }) : "Inf";
 }
 
+function displayDecimal(value, digits = 4) {
+  return Number.isFinite(value) ? decimal(value, digits) : "-";
+}
+
 function percent(value, digits = 4) {
   return Number.isFinite(value) ? `${decimal(value, digits)}%` : "Inf%";
 }
 
+function displayPercent(value, digits = 4) {
+  return Number.isFinite(value) ? percent(value, digits) : "-";
+}
+
 function milliseconds(ms) {
   return Number.isFinite(ms) ? `${ms.toLocaleString("id-ID", { maximumFractionDigits: 3 })} ms` : "-";
+}
+
+function displayMilliseconds(ms) {
+  return Number.isFinite(ms) ? milliseconds(ms) : "-";
+}
+
+function displayPsnr(value) {
+  return Number.isFinite(value) || value === Infinity ? psnrLabel(value) : "-";
 }
 
 function seconds(ms) {
