@@ -355,8 +355,10 @@ test("ringkasan penelitian menghitung kategori, rata-rata, best, dan worst", () 
   assert.equal(parseCsvLine(dataLine).length, RESEARCH_SUMMARY_COLUMNS.length);
 
   const [formatSummary] = summarizeResearchRowsByFormat(rows);
+  assert.equal(formatSummary.image_count, 2);
   const formatCsv = serializeSummaryByFormatCsv([formatSummary]);
   assert.equal(parseCsvLine(formatCsv.slice(1).split("\n")[0]).includes("source_format"), true);
+  assert.equal(parseCsvLine(formatCsv.slice(1).split("\n")[0]).includes("image_count"), true);
 
   const [contentSummary] = summarizeResearchRowsByContentCategory(rows);
   assert.equal(contentSummary.content_category, "NATURAL_PHOTO");

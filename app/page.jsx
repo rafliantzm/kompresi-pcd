@@ -38,6 +38,7 @@ import {
 } from "../lib/research-metrics.js";
 
 const LEVELS = [256, 128, 64, 32, 16, 8];
+const RESEARCH_LEVELS = [128, 64, 32, 16, 8];
 const FULL_FLOW_METHOD = "Kuantisasi + Perbandingan RLE dan Huffman";
 const FIXED_PROCESSING_MODE = "optimized";
 const MAX_WORKING_PIXELS = 1200000;
@@ -52,6 +53,7 @@ const MULTI_LEVEL_COLUMNS = [
   "Resolusi Sumber",
   "Resolusi Kerja",
   "Quantization Level",
+  "Quantization Status",
   "Bit per Piksel",
   "Raw Working Grayscale Size",
   "Quantized Fixed-bit Size",
@@ -63,6 +65,8 @@ const MULTI_LEVEL_COLUMNS = [
   "Compression Ratio Huffman",
   "Space Saving RLE",
   "Space Saving Huffman",
+  "RLE Category",
+  "Huffman Category",
   "Reconstruction MSE Kuantisasi",
   "Reconstruction PSNR Kuantisasi",
   "Reconstruction MSE RLE",
@@ -73,6 +77,8 @@ const MULTI_LEVEL_COLUMNS = [
   "Round-trip PSNR RLE",
   "Round-trip MSE Huffman",
   "Round-trip PSNR Huffman",
+  "RLE Byte Identical",
+  "Huffman Byte Identical",
   "Waktu Kuantisasi",
   "Waktu RLE Encode",
   "Waktu RLE Decode",
@@ -159,6 +165,7 @@ export default function Home() {
   const [processingStage, setProcessingStage] = useState("");
   const [multiProgress, setMultiProgress] = useState("");
   const [multiLevelRows, setMultiLevelRows] = useState([]);
+  const [multiLevelRun, setMultiLevelRun] = useState(createEmptyMultiLevelRun());
   const [analysisTableView, setAnalysisTableView] = useState("Ringkas");
   const [error, setError] = useState("");
   const [rlePage, setRlePage] = useState(0);
@@ -335,30 +342,97 @@ export default function Home() {
     setError("");
     setIsMultiTesting(true);
     setMultiLevelRows([]);
+    const startedAt = performance.now();
+    let processedCount = 0;
+    let skippedCount = 0;
+    let failedCount = datasetItems.filter((item) => !item.decoded).length;
+    let completedCombinations = 0;
+    setMultiLevelRun({
+      status: "RUNNING",
+      totalFiles: datasetItems.length,
+      validFiles: validItems.length,
+      totalCombinations: validItems.length * RESEARCH_LEVELS.length,
+      completedCombinations: 0,
+      processedCount,
+      skippedCount,
+      failedCount,
+      currentFileName: "",
+      currentFileIndex: 0,
+      currentLevel: "",
+      runtimeMs: 0,
+    });
     const rows = [];
     let no = 1;
     try {
       for (const [imageIndex, item] of validItems.entries()) {
-        for (const levelValue of LEVELS) {
-          setMultiProgress(`${imageIndex + 1}/${validItems.length} citra, level ${levelValue}`);
+        for (const levelValue of RESEARCH_LEVELS) {
+          const progressText = `Memproses ${imageIndex + 1} dari ${validItems.length} citra - Level ${levelValue}`;
+          setMultiProgress(progressText);
+          setMultiLevelRun((current) => ({
+            ...current,
+            currentFileName: item.fileInfo.name,
+            currentFileIndex: imageIndex + 1,
+            currentLevel: levelValue,
+            runtimeMs: performance.now() - startedAt,
+          }));
           await yieldToBrowser();
           if (levelValue >= item.sourceProfile.estimatedLevel) {
             rows.push(buildInvalidMultiLevelRow(no++, item, levelValue));
+            skippedCount += 1;
+            completedCombinations += 1;
+            setMultiLevelRows([...rows]);
+            setMultiLevelRun((current) => ({
+              ...current,
+              completedCombinations,
+              processedCount,
+              skippedCount,
+              failedCount,
+              runtimeMs: performance.now() - startedAt,
+            }));
             continue;
           }
-          const testResult = runPipeline(
-            item.decoded,
-            item.fileInfo,
-            levelValue,
-            item.sourceProfile,
-          );
-          rows.push(buildMultiLevelRow(no++, item, levelValue, testResult));
+          try {
+            const testResult = runPipeline(
+              item.decoded,
+              item.fileInfo,
+              levelValue,
+              item.sourceProfile,
+            );
+            rows.push(buildMultiLevelRow(no++, item, levelValue, testResult));
+            processedCount += 1;
+          } catch (err) {
+            rows.push(buildFailedMultiLevelRow(no++, item, levelValue, err));
+            failedCount += 1;
+          }
+          completedCombinations += 1;
           setMultiLevelRows([...rows]);
+          setMultiLevelRun((current) => ({
+            ...current,
+            completedCombinations,
+            processedCount,
+            skippedCount,
+            failedCount,
+            runtimeMs: performance.now() - startedAt,
+          }));
         }
       }
       setMultiLevelRows(rows);
+      setMultiLevelRun((current) => ({
+        ...current,
+        status: "DONE",
+        completedCombinations,
+        processedCount,
+        skippedCount,
+        failedCount,
+        runtimeMs: performance.now() - startedAt,
+      }));
     } catch (err) {
       setError(`Tahap multi-level test gagal: ${err instanceof Error ? err.message : "Pengujian tidak dapat diselesaikan."}`);
+      setMultiLevelRun((current) => ({
+        ...current,
+        status: "FAILED",
+        runtimeMs: performance.now() - startedAt,
+      }));
     } finally {
       setIsMultiTesting(false);
       setMultiProgress("");
@@ -384,10 +458,19 @@ export default function Home() {
     setProcessingStage("");
     setMultiProgress("");
     setMultiLevelRows([]);
+    setMultiLevelRun(createEmptyMultiLevelRun());
     setIsMultiTesting(false);
     setAnalysisTableView("Ringkas");
     setError("");
     setRlePage(0);
+  }
+
+  function resetMultiLevelResults() {
+    setMultiProgress("");
+    setMultiLevelRows([]);
+    setMultiLevelRun(createEmptyMultiLevelRun());
+    setIsMultiTesting(false);
+    setError("");
   }
 
   return (
@@ -448,16 +531,30 @@ export default function Home() {
                 ? `${sourceProfile.uniqueCount} nilai grayscale unik; level ini dan level di atasnya dinonaktifkan.`
                 : "Upload citra untuk membaca level efektifnya."}
             </small>
+            {decoded?.wasResized && <small>Citra disesuaikan otomatis untuk menjaga stabilitas pemrosesan.</small>}
           </div>
 
           <div className="actions">
             <button type="button" onClick={processImage} disabled={!decoded || isProcessing}>Proses Alur Lengkap</button>
+            <button type="button" className="secondary" onClick={runMultiLevelTest} disabled={!datasetItems.some((item) => item.decoded) || isProcessing || isMultiTesting}>
+              {isMultiTesting ? "Menjalankan Pengujian..." : "Jalankan Pengujian Multi-Level"}
+            </button>
           </div>
         </section>
 
         <PipelineExplanation />
 
         <DatasetRecap items={datasetItems} />
+
+        <MultiLevelControl
+          items={datasetItems}
+          rows={multiLevelRows}
+          run={multiLevelRun}
+          isRunning={isMultiTesting}
+          progress={multiProgress}
+          onRun={runMultiLevelTest}
+          onReset={resetMultiLevelResults}
+        />
 
         {(decoded || result || multiLevelRows.length > 0) && (
           <section className="export-panel" aria-label="Aksi dan ekspor penelitian">
@@ -471,9 +568,6 @@ export default function Home() {
             <div className="actions compact">
               <button type="button" className="secondary" onClick={() => setShowDetail((value) => !value)} disabled={!result}>
                 {showDetail ? "Sembunyikan Detail" : "Lihat Detail Perhitungan"}
-              </button>
-              <button type="button" className="secondary" onClick={runMultiLevelTest} disabled={!datasetItems.some((item) => item.decoded) || isProcessing || isMultiTesting}>
-                {isMultiTesting ? "Menjalankan Multi-Level..." : "Run Multi-Level Test"}
               </button>
               <button type="button" className="secondary" onClick={downloadMultiLevelCsv} disabled={!multiLevelRows.length}>multi_level_quantization_test.csv</button>
               <button type="button" className="secondary" onClick={downloadResearchCsv} disabled={!result && !multiLevelRows.length}>Unduh CSV Penelitian - Raw Numeric</button>
@@ -693,20 +787,75 @@ function DatasetRecap({ items }) {
   );
 }
 
+function MultiLevelControl({ items, rows, run, isRunning, progress, onRun, onReset }) {
+  const validFiles = items.filter((item) => item.decoded).length;
+  const failedFiles = items.filter((item) => !item.decoded).length;
+  const totalCombinations = validFiles * RESEARCH_LEVELS.length;
+  const stats = buildMultiLevelStats(items, rows, run);
+  const completion = stats.totalCombinations ? Math.min(100, (stats.completedCombinations / stats.totalCombinations) * 100) : 0;
+  return (
+    <section className="multi-level-control" aria-label="Pengujian Multi-Level Seluruh Citra">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Batch Research</p>
+          <h2>Pengujian Multi-Level Seluruh Citra</h2>
+        </div>
+        <span>{isRunning ? progress || "Memproses batch..." : stats.statusText}</span>
+      </div>
+      <div className="multi-level-overview">
+        <StatPill label="File Terpilih" value={number(items.length)} note={`${number(validFiles)} valid, ${number(failedFiles)} gagal decode`} />
+        <StatPill label="Level Diuji" value={RESEARCH_LEVELS.join(", ")} note="Level 256 tidak dipakai untuk batch penelitian" />
+        <StatPill label="Kombinasi" value={number(totalCombinations)} note="Jumlah file valid x 5 level" />
+        <StatPill label="Processed" value={number(stats.processedCount)} note="Row berhasil dihitung" />
+        <StatPill label="Skipped" value={number(stats.skippedCount)} note="Level tidak valid tetap dicatat" />
+        <StatPill label="Failed" value={number(stats.failedCount)} note="Decode atau proses gagal" />
+      </div>
+      <div className="progress-wrap" aria-label="Progress pengujian multi-level">
+        <div className="progress-bar">
+          <span style={{ width: `${completion}%` }} />
+        </div>
+        <div className="progress-meta">
+          <span>{progress || (rows.length ? "Pengujian selesai" : "Belum dijalankan")}</span>
+          <span>{number(stats.completedCombinations)} / {number(totalCombinations)} kombinasi</span>
+        </div>
+      </div>
+      <div className="multi-level-current">
+        <span>Citra saat ini: <strong>{stats.currentFileName || "-"}</strong></span>
+        <span>Level saat ini: <strong>{stats.currentLevel || "-"}</strong></span>
+        <span>Runtime total: <strong>{displayMilliseconds(stats.runtimeMs)}</strong></span>
+      </div>
+      <div className="actions compact">
+        <button type="button" onClick={onRun} disabled={!validFiles || isRunning}>
+          {isRunning ? "Pengujian Berjalan..." : "Jalankan Pengujian Multi-Level"}
+        </button>
+        <button type="button" className="secondary reset" onClick={onReset} disabled={isRunning || (!rows.length && run.status === "IDLE")}>Reset Hasil Multi-Level</button>
+      </div>
+      {items.some((item) => item.decoded?.wasResized) && (
+        <p className="resize-note">Citra disesuaikan otomatis untuk menjaga stabilitas pemrosesan.</p>
+      )}
+    </section>
+  );
+}
+
+function StatPill({ label, value, note }) {
+  return (
+    <article className="stat-pill">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      <small>{note}</small>
+    </article>
+  );
+}
+
 function MultiLevelResults({ rows, progress, isRunning, onDownload }) {
   const [query, setQuery] = useState("");
   const [activeTable, setActiveTable] = useState("Ukuran & Efisiensi");
   const filtered = filterRows(rows, query, ["Image Name", "Format", "Quantization Level", "Best Method", "Status"]);
   const grouped = groupRowsByImage(filtered);
   const columns = multiLevelColumnsFor(activeTable);
+  const exportColumns = [...columns, "Resolusi Sumber", "Resolusi Kerja"];
   const downloadTable = () => {
-    const csv = toCsv([["Image Name", "Format", "Resolusi Sumber", "Resolusi Kerja", ...columns], ...filtered.map((row) => [
-      row["Image Name"],
-      row.Format,
-      row["Resolusi Sumber"],
-      row["Resolusi Kerja"],
-      ...columns.map((column) => row[column] ?? "-"),
-    ])]);
+    const csv = toCsv([exportColumns, ...filtered.map((row) => exportColumns.map((column) => row[column] ?? "-"))]);
     downloadText(csv, `multi_level_${activeTable.toLowerCase().replaceAll(" ", "_").replaceAll("&", "dan")}.csv`, "text/csv;charset=utf-8");
   };
   return (
@@ -714,7 +863,7 @@ function MultiLevelResults({ rows, progress, isRunning, onDownload }) {
       <div className="section-heading">
         <div>
           <p className="eyebrow">Multi-Level Quantization Test</p>
-          <h2>Pengujian Level 256, 128, 64, 32, 16, dan 8</h2>
+          <h2>Pengujian Level 128, 64, 32, 16, dan 8</h2>
         </div>
         <span>{isRunning ? progress || "Memproses..." : `${rows.length} baris`}</span>
       </div>
@@ -1800,6 +1949,44 @@ function buildMethodConclusions(result) {
   ];
 }
 
+function createEmptyMultiLevelRun() {
+  return {
+    status: "IDLE",
+    totalFiles: 0,
+    validFiles: 0,
+    totalCombinations: 0,
+    completedCombinations: 0,
+    processedCount: 0,
+    skippedCount: 0,
+    failedCount: 0,
+    currentFileName: "",
+    currentFileIndex: 0,
+    currentLevel: "",
+    runtimeMs: 0,
+  };
+}
+
+function buildMultiLevelStats(items, rows, run) {
+  const validFiles = items.filter((item) => item.decoded).length;
+  const failedFiles = items.filter((item) => !item.decoded).length;
+  const processedRows = rows.filter((row) => row.__raw?.quantization_status === "PROCESSED").length;
+  const skippedRows = rows.filter((row) => row.__raw?.quantization_status === "SKIPPED" && String(row.Status).startsWith("SKIPPED")).length;
+  const failedRows = rows.filter((row) => String(row.Status).startsWith("FAILED")).length;
+  const hasRunData = run.status !== "IDLE" || rows.length > 0;
+  const totalCombinations = run.totalCombinations || validFiles * RESEARCH_LEVELS.length;
+  return {
+    statusText: run.status === "DONE" ? "Selesai" : run.status === "FAILED" ? "Gagal" : rows.length ? "Selesai" : "Belum dijalankan",
+    totalCombinations,
+    completedCombinations: hasRunData ? (run.completedCombinations || rows.length) : 0,
+    processedCount: hasRunData ? (run.processedCount || processedRows) : 0,
+    skippedCount: hasRunData ? (run.skippedCount || skippedRows) : 0,
+    failedCount: hasRunData ? (run.failedCount || failedFiles + failedRows) : failedFiles,
+    currentFileName: run.currentFileName,
+    currentLevel: run.currentLevel,
+    runtimeMs: run.runtimeMs,
+  };
+}
+
 function buildDatasetRecap(items) {
   return DATASET_FORMATS.map((format) => {
     const groupItems = items.filter((item) => datasetFormatKey(item.fileInfo.format) === format);
@@ -1832,6 +2019,7 @@ function buildInvalidMultiLevelRow(no, item, levelValue) {
     "Resolusi Sumber": resolution ? `${resolution.sourceWidth} x ${resolution.sourceHeight}` : "-",
     "Resolusi Kerja": resolution ? `${resolution.workingWidth} x ${resolution.workingHeight}` : "-",
     "Quantization Level": levelValue,
+    "Quantization Status": "SKIPPED",
     "Bit per Piksel": "-",
     "Raw Working Grayscale Size": "-",
     "Quantized Fixed-bit Size": "-",
@@ -1843,6 +2031,8 @@ function buildInvalidMultiLevelRow(no, item, levelValue) {
     "Compression Ratio Huffman": "-",
     "Space Saving RLE": "-",
     "Space Saving Huffman": "-",
+    "RLE Category": "SKIPPED",
+    "Huffman Category": "SKIPPED",
     "Reconstruction MSE Kuantisasi": "-",
     "Reconstruction PSNR Kuantisasi": "-",
     "Reconstruction MSE RLE": "-",
@@ -1853,6 +2043,8 @@ function buildInvalidMultiLevelRow(no, item, levelValue) {
     "Round-trip PSNR RLE": "-",
     "Round-trip MSE Huffman": "-",
     "Round-trip PSNR Huffman": "-",
+    "RLE Byte Identical": "false",
+    "Huffman Byte Identical": "false",
     "Waktu Kuantisasi": "-",
     "Waktu RLE Encode": "-",
     "Waktu RLE Decode": "-",
@@ -1874,9 +2066,22 @@ function buildInvalidMultiLevelRow(no, item, levelValue) {
   };
 }
 
+function buildFailedMultiLevelRow(no, item, levelValue, err) {
+  const resolution = item.decoded?.resolutionInfo;
+  const reason = err instanceof Error ? err.message : "Pengujian level gagal diproses.";
+  return {
+    ...buildInvalidMultiLevelRow(no, item, levelValue),
+    __raw: buildSkippedRawNumericResearchRow(item, levelValue, `Processing failed: ${reason}`),
+    "Quantization Status": "FAILED",
+    Status: `FAILED: ${reason}`,
+  };
+}
+
 function buildMultiLevelRow(no, item, levelValue, result) {
   const bestMethod = result.rle.compressionMetrics.compressionRatio >= result.huffman.compressionMetrics.compressionRatio ? "RLE" : "Huffman";
   const resolution = result.resolutionInfo;
+  const rleCategory = classifyCompression(result.rle.compressionMetrics.compressionRatio);
+  const huffmanCategory = classifyCompression(result.huffman.compressionMetrics.compressionRatio);
   return {
     No: no,
     __raw: buildRawNumericResearchRow(result),
@@ -1885,6 +2090,7 @@ function buildMultiLevelRow(no, item, levelValue, result) {
     "Resolusi Sumber": `${resolution.sourceWidth} x ${resolution.sourceHeight}`,
     "Resolusi Kerja": `${resolution.workingWidth} x ${resolution.workingHeight}`,
     "Quantization Level": levelValue,
+    "Quantization Status": "PROCESSED",
     "Bit per Piksel": result.quantization.quantizedBitDepth,
     "Raw Working Grayscale Size": bits(result.rawWorkingGrayscaleBits),
     "Quantized Fixed-bit Size": bits(result.quantization.theoreticalBits),
@@ -1896,6 +2102,8 @@ function buildMultiLevelRow(no, item, levelValue, result) {
     "Compression Ratio Huffman": decimal(result.huffman.compressionMetrics.compressionRatio, 4),
     "Space Saving RLE": percent(result.rle.compressionMetrics.spaceSavingPercent),
     "Space Saving Huffman": percent(result.huffman.compressionMetrics.spaceSavingPercent),
+    "RLE Category": rleCategory,
+    "Huffman Category": huffmanCategory,
     "Reconstruction MSE Kuantisasi": decimal(result.quantReconstructionQuality.mse, 6),
     "Reconstruction PSNR Kuantisasi": psnrLabel(result.quantReconstructionQuality.psnr),
     "Reconstruction MSE RLE": decimal(result.rle.reconstructionQuality.mse, 6),
@@ -1906,6 +2114,8 @@ function buildMultiLevelRow(no, item, levelValue, result) {
     "Round-trip PSNR RLE": psnrLabel(result.rle.roundTripValidation.psnr),
     "Round-trip MSE Huffman": decimal(result.huffman.roundTripValidation.mse, 6),
     "Round-trip PSNR Huffman": psnrLabel(result.huffman.roundTripValidation.psnr),
+    "RLE Byte Identical": String(result.rle.roundTripValidation.isByteIdentical),
+    "Huffman Byte Identical": String(result.huffman.roundTripValidation.isByteIdentical),
     "Waktu Kuantisasi": milliseconds(result.quantTiming.quantizationMs),
     "Waktu RLE Encode": milliseconds(result.rle.timing.encodeMs),
     "Waktu RLE Decode": milliseconds(result.rle.timing.decodeMs),
@@ -2207,22 +2417,21 @@ function columnsForAnalysisView(view) {
 function multiLevelColumnsFor(tab) {
   if (tab === "Kualitas Citra") {
     return [
+      "Image Name",
       "Quantization Level",
+      "Quantization Status",
       "Reconstruction MSE Kuantisasi",
       "Reconstruction PSNR Kuantisasi",
-      "Reconstruction MSE RLE",
-      "Reconstruction PSNR RLE",
-      "Reconstruction MSE Huffman",
-      "Reconstruction PSNR Huffman",
       "Round-trip MSE RLE",
-      "Round-trip PSNR RLE",
       "Round-trip MSE Huffman",
-      "Round-trip PSNR Huffman",
+      "RLE Byte Identical",
+      "Huffman Byte Identical",
       "Status",
     ];
   }
   if (tab === "Performa") {
     return [
+      "Image Name",
       "Quantization Level",
       "Waktu Kuantisasi",
       "Waktu RLE Encode",
@@ -2244,7 +2453,10 @@ function multiLevelColumnsFor(tab) {
     ];
   }
   return [
+    "Image Name",
+    "Format",
     "Quantization Level",
+    "Quantization Status",
     "Bit per Piksel",
     "Raw Working Grayscale Size",
     "Quantized Fixed-bit Size",
@@ -2256,6 +2468,8 @@ function multiLevelColumnsFor(tab) {
     "Compression Ratio Huffman",
     "Space Saving RLE",
     "Space Saving Huffman",
+    "RLE Category",
+    "Huffman Category",
     "Best Method",
     "Status",
   ];

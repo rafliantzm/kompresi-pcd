@@ -64,9 +64,10 @@ test("Dataset recap dan multi-level testing tersedia", () => {
   for (const format of ["JPG/JPEG", "PNG", "BMP", "TIFF"]) {
     assert.match(page, new RegExp(format.replace("/", "\\/")));
   }
-  assert.match(page, /Run Multi-Level Test/);
+  assert.match(page, /Jalankan Pengujian Multi-Level/);
+  assert.match(page, /Pengujian Multi-Level Seluruh Citra/);
   assert.match(page, /MULTI_LEVEL_COLUMNS/);
-  assert.match(page, /Unduh CSV Multi-Level/);
+  assert.match(page, /multi_level_quantization_test\.csv/);
   assert.match(page, /Minimum rekomendasi 5 citra per format/);
 });
 
@@ -93,6 +94,7 @@ test("UI memisahkan kualitas rekonstruksi dan validasi round-trip", () => {
 
 test("UI final tidak menampilkan pilihan mode output atau controlled resolution", () => {
   assert.match(page, /Proses Alur Lengkap/);
+  assert.match(page, /Jalankan Pengujian Multi-Level/);
   for (const removedText of [
     "Mode Output",
     "Mode Resolusi",
@@ -114,9 +116,11 @@ test("UI final tidak menampilkan pilihan mode output atau controlled resolution"
 
 test("Pipeline selalu alur lengkap dan metadata resolusi tetap internal", () => {
   assert.match(page, /const FULL_FLOW_METHOD = "Kuantisasi \+ Perbandingan RLE dan Huffman"/);
+  assert.match(page, /const RESEARCH_LEVELS = \[128, 64, 32, 16, 8\]/);
   assert.match(page, /const FIXED_PROCESSING_MODE = "optimized"/);
   assert.match(page, /const MAX_WORKING_PIXELS = 1200000/);
   assert.doesNotMatch(page, /includeFull/);
+  assert.doesNotMatch(page, /for \(const levelValue of LEVELS\)/);
   for (const stage of ['Tahap: "Kuantisasi"', 'Tahap: "RLE"', 'Tahap: "Huffman"', 'Tahap: "Dekompresi"', 'Tahap: "Evaluasi Akhir"']) {
     assert.match(page, new RegExp(stage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
@@ -130,6 +134,26 @@ test("RLE dan Huffman memakai kode kuantisasi langsung secara independen", () =>
   assert.match(page, /encodeHuffmanWithTiming\(quantizedCodes/);
   assert.doesNotMatch(page, /encodeHuffmanWithTiming\(rle/);
   assert.match(page, /RLE dan Huffman dibandingkan sebagai dua metode setelah kuantisasi/);
+});
+
+test("Batch multi-level punya progress, reset hasil, dan tidak menghapus state main flow", () => {
+  assert.match(page, /setMultiLevelRun/);
+  assert.match(page, /completedCombinations/);
+  assert.match(page, /processedCount/);
+  assert.match(page, /skippedCount/);
+  assert.match(page, /failedCount/);
+  assert.match(page, /Reset Hasil Multi-Level/);
+  assert.match(page, /Memproses \$\{imageIndex \+ 1\} dari \$\{validItems\.length\} citra - Level \$\{levelValue\}/);
+
+  const processMatch = page.match(/function processImage\(\)[\s\S]*?function downloadResearchCsv/);
+  assert.ok(processMatch, "fungsi processImage harus ditemukan");
+  assert.doesNotMatch(processMatch[0], /setMultiLevelRows\(\[\]\)/);
+  assert.doesNotMatch(processMatch[0], /setMultiLevelRun/);
+
+  const batchMatch = page.match(/async function runMultiLevelTest\(\)[\s\S]*?function downloadMultiLevelCsv/);
+  assert.ok(batchMatch, "fungsi runMultiLevelTest harus ditemukan");
+  assert.doesNotMatch(batchMatch[0], /setResult\(null\)/);
+  assert.match(batchMatch[0], /datasetItems\.filter\(\(item\) => item\.decoded\)/);
 });
 
 test("RLE dan histogram memakai ringkasan agar tabel besar tidak menumpuk", () => {
@@ -191,4 +215,18 @@ test("Export penelitian hanya mempertahankan CSV final yang dibutuhkan", () => {
   }
   assert.doesNotMatch(page, /serializeResolutionExperimentRawCsv/);
   assert.doesNotMatch(page, /serializeSummaryByResolutionCsv/);
+});
+
+test("Tabel multi-level memuat kolom penelitian utama", () => {
+  for (const column of [
+    "Image Name",
+    "Format",
+    "Quantization Status",
+    "RLE Category",
+    "Huffman Category",
+    "RLE Byte Identical",
+    "Huffman Byte Identical",
+  ]) {
+    assert.match(page, new RegExp(column.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
 });
