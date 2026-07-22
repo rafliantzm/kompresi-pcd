@@ -127,6 +127,7 @@ test("UI memisahkan kualitas rekonstruksi dan validasi round-trip", () => {
 
 test("UI final tidak menampilkan pilihan mode output atau controlled resolution", () => {
   assert.match(page, /Proses Alur Lengkap/);
+  assert.match(page, /Reset Pemrosesan/);
   assert.match(page, /Jalankan Pengujian Multi-Level/);
   for (const removedText of [
     "Mode Output",
@@ -145,6 +146,15 @@ test("UI final tidak menampilkan pilihan mode output atau controlled resolution"
   assert.doesNotMatch(page, /const \[processingMode/);
   assert.doesNotMatch(css, /resolution-panel/);
   assert.doesNotMatch(css, /warning-note/);
+});
+
+test("Panel proses utama menyediakan tombol reset pemrosesan", () => {
+  const controlsMatch = page.match(/<section className="controls"[\s\S]*?<PipelineExplanation \/>/);
+  assert.ok(controlsMatch, "panel proses utama harus ditemukan");
+  assert.match(controlsMatch[0], /Proses Alur Lengkap/);
+  assert.match(controlsMatch[0], /Reset Pemrosesan/);
+  assert.match(controlsMatch[0], /onClick=\{resetApp\}/);
+  assert.match(controlsMatch[0], /disabled=\{isProcessing \|\| isMultiTesting/);
 });
 
 test("Pipeline selalu alur lengkap dan metadata resolusi tetap internal", () => {

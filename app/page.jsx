@@ -536,6 +536,9 @@ export default function Home() {
 
           <div className="actions">
             <button type="button" onClick={processImage} disabled={!decoded || isProcessing}>Proses Alur Lengkap</button>
+            <button type="button" className="secondary reset" onClick={resetApp} disabled={isProcessing || isMultiTesting || (!decoded && !result && !multiLevelRows.length && !datasetItems.length)}>
+              Reset Pemrosesan
+            </button>
             <button type="button" className="secondary" onClick={runMultiLevelTest} disabled={!datasetItems.some((item) => item.decoded) || isProcessing || isMultiTesting}>
               {isMultiTesting ? "Menjalankan Pengujian..." : "Jalankan Pengujian Multi-Level"}
             </button>
