@@ -2609,6 +2609,7 @@ function HuffmanTreeSvg({ root, entries = [], fileName = "huffman_tree" }) {
   const [treeMode, setTreeMode] = useState("Mode Sederhana");
   const [searchSymbol, setSearchSymbol] = useState("");
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const panelRef = useRef(null);
   const svgRef = useRef(null);
   const entryMap = new Map(entries.map((entry) => [entry.symbol, entry]));
   const nodes = [];
@@ -2663,6 +2664,29 @@ function HuffmanTreeSvg({ root, entries = [], fileName = "huffman_tree" }) {
     setZoom(1);
     setPan({ x: 0, y: 0 });
   };
+  const toggleFullscreen = async (event) => {
+    event.stopPropagation();
+    const panel = panelRef.current;
+    if (!panel) return;
+    if (document.fullscreenElement === panel) {
+      await document.exitFullscreen?.();
+      setIsFullscreen(false);
+      return;
+    }
+    if (panel.requestFullscreen) {
+      await panel.requestFullscreen();
+      setIsFullscreen(true);
+      return;
+    }
+    setIsFullscreen((value) => !value);
+  };
+  useEffect(() => {
+    const syncFullscreen = () => {
+      setIsFullscreen(document.fullscreenElement === panelRef.current);
+    };
+    document.addEventListener("fullscreenchange", syncFullscreen);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreen);
+  }, []);
   const exportSvg = () => {
     if (!svgRef.current) return;
     const source = new XMLSerializer().serializeToString(svgRef.current);
@@ -2690,59 +2714,63 @@ function HuffmanTreeSvg({ root, entries = [], fileName = "huffman_tree" }) {
   const topEntries = entries.filter((entry) => entry.frequency > 0).sort((a, b) => b.frequency - a.frequency).slice(0, 16);
   const requestedSymbol = searchSymbol.trim() === "" ? null : Number(searchSymbol);
   return (
-    <div className={`tree-wrap ${isFullscreen ? "fullscreen" : ""}`}>
-      <div className="tree-controls" aria-label="Kontrol pohon Huffman">
+    <div ref={panelRef} className={`huffman-tree-panel ${isFullscreen ? "fullscreen" : ""}`}>
+      <div className="huffman-tree-toolbar" aria-label="Kontrol pohon Huffman">
         {["Mode Sederhana", "Mode Detail"].map((mode) => (
-          <button key={mode} type="button" className={treeMode === mode ? "tab-button active" : "secondary"} onClick={() => setTreeMode(mode)}>{mode}</button>
+          <button key={mode} type="button" className={treeMode === mode ? "tab-button active" : "secondary"} onClick={(event) => { event.stopPropagation(); setTreeMode(mode); }}>{mode}</button>
         ))}
         <label className="tree-search">
           <span>Cari simbol</span>
-          <input type="number" min="0" max="255" value={searchSymbol} onChange={(event) => setSearchSymbol(event.target.value)} placeholder="contoh 12" />
+          <input type="number" min="0" max="255" value={searchSymbol} onClick={(event) => event.stopPropagation()} onChange={(event) => setSearchSymbol(event.target.value)} placeholder="contoh 12" />
         </label>
-        <button type="button" className="secondary" onClick={() => setZoom((value) => Math.min(2.6, value + 0.15))}>Zoom In</button>
-        <button type="button" className="secondary" onClick={() => setZoom((value) => Math.max(0.35, value - 0.15))}>Zoom Out</button>
-        <button type="button" className="secondary" onClick={() => setPan((value) => ({ ...value, x: value.x - 60 }))}>Geser Kiri</button>
-        <button type="button" className="secondary" onClick={() => setPan((value) => ({ ...value, x: value.x + 60 }))}>Geser Kanan</button>
-        <button type="button" className="secondary" onClick={() => setPan((value) => ({ ...value, y: value.y - 60 }))}>Geser Atas</button>
-        <button type="button" className="secondary" onClick={() => setPan((value) => ({ ...value, y: value.y + 60 }))}>Geser Bawah</button>
-        <button type="button" className="secondary" onClick={fit}>Fit to Screen</button>
-        <button type="button" className="secondary" onClick={centerRoot}>Center Root</button>
-        <button type="button" className="secondary" onClick={() => setIsFullscreen((value) => !value)}>{isFullscreen ? "Keluar Fullscreen" : "Expand Fullscreen"}</button>
-        <button type="button" className="secondary" onClick={reset}>Reset</button>
-        <button type="button" className="secondary" onClick={exportSvg}>Export SVG</button>
-        <button type="button" className="secondary" onClick={exportPng}>Export PNG</button>
+        <button type="button" className="secondary" onClick={(event) => { event.stopPropagation(); setZoom((value) => Math.min(2.6, value + 0.15)); }}>Zoom In</button>
+        <button type="button" className="secondary" onClick={(event) => { event.stopPropagation(); setZoom((value) => Math.max(0.35, value - 0.15)); }}>Zoom Out</button>
+        <button type="button" className="secondary" onClick={(event) => { event.stopPropagation(); setPan((value) => ({ ...value, x: value.x - 60 })); }}>Geser Kiri</button>
+        <button type="button" className="secondary" onClick={(event) => { event.stopPropagation(); setPan((value) => ({ ...value, x: value.x + 60 })); }}>Geser Kanan</button>
+        <button type="button" className="secondary" onClick={(event) => { event.stopPropagation(); setPan((value) => ({ ...value, y: value.y - 60 })); }}>Geser Atas</button>
+        <button type="button" className="secondary" onClick={(event) => { event.stopPropagation(); setPan((value) => ({ ...value, y: value.y + 60 })); }}>Geser Bawah</button>
+        <button type="button" className="secondary" onClick={(event) => { event.stopPropagation(); fit(); }}>Fit to Screen</button>
+        <button type="button" className="secondary" onClick={(event) => { event.stopPropagation(); centerRoot(); }}>Center Root</button>
+        <button type="button" className="secondary" onClick={toggleFullscreen}>{isFullscreen ? "Keluar Fullscreen" : "Expand Fullscreen"}</button>
+        <button type="button" className="secondary" onClick={(event) => { event.stopPropagation(); reset(); }}>Reset</button>
+        <button type="button" className="secondary" onClick={(event) => { event.stopPropagation(); exportSvg(); }}>Export SVG</button>
+        <button type="button" className="secondary" onClick={(event) => { event.stopPropagation(); exportPng(); }}>Export PNG</button>
       </div>
-      {treeMode === "Mode Sederhana" ? (
-        <div className="top-symbols">
-          {topEntries.map((entry) => (
-            <article key={entry.symbol}>
-              <span>Simbol {entry.symbol}</span>
-              <strong>{entry.frequency}</strong>
-              <small>{entry.code ?? "-"} - panjang {entry.codeLength}</small>
-            </article>
-          ))}
-        </div>
-      ) : null}
-      <p className="tree-legend">
-        Mode sederhana menampilkan node sebagai frekuensi dan daun sebagai simbol. Mode detail tetap tersedia untuk menelusuri penempatan kode 0/1 dari akar ke daun.
-      </p>
-      <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Visualisasi pohon Huffman dengan edge 0 dan 1" className={treeMode === "Mode Detail" ? "" : "visually-soft"}>
-        <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
-          {edges.map((edge, index) => (
-            <g key={index}>
-              <line x1={edge.from.x} y1={edge.from.y + 18} x2={edge.to.x} y2={edge.to.y - 18} />
-              <text x={(edge.from.x + edge.to.x) / 2} y={(edge.from.y + edge.to.y) / 2 - 4}>{edge.label}</text>
-            </g>
-          ))}
-          {nodes.map((node, index) => (
-            <g key={index} className={requestedSymbol !== null && node.symbols.includes(requestedSymbol) ? "matched" : ""}>
-              <rect x={node.x - 48} y={node.y - 24} width="96" height="48" rx="8" className={node.leaf ? "leaf" : ""} />
-              <text x={node.x} y={node.y - 4}>{treeMode === "Mode Detail" ? node.detailLabel : node.label}</text>
-              <text x={node.x} y={node.y + 13}>{treeMode === "Mode Detail" ? `f=${number(node.frequency)}` : symbolListLabel(node.symbols)}</text>
-            </g>
-          ))}
-        </g>
-      </svg>
+      <div className="huffman-tree-help">
+        {treeMode === "Mode Sederhana" ? (
+          <div className="top-symbols">
+            {topEntries.map((entry) => (
+              <article key={entry.symbol}>
+                <span>Simbol {entry.symbol}</span>
+                <strong>{entry.frequency}</strong>
+                <small>{entry.code ?? "-"} - panjang {entry.codeLength}</small>
+              </article>
+            ))}
+          </div>
+        ) : null}
+        <p className="tree-legend">
+          Mode sederhana menampilkan node sebagai frekuensi dan daun sebagai simbol. Mode detail tetap tersedia untuk menelusuri penempatan kode 0/1 dari akar ke daun.
+        </p>
+      </div>
+      <div className="huffman-tree-viewport" aria-label="Viewport pohon Huffman">
+        <svg ref={svgRef} viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Visualisasi pohon Huffman dengan edge 0 dan 1" className={`huffman-tree-svg ${treeMode === "Mode Detail" ? "" : "visually-soft"}`}>
+          <g className="huffman-tree-content" transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
+            {edges.map((edge, index) => (
+              <g key={index}>
+                <line x1={edge.from.x} y1={edge.from.y + 18} x2={edge.to.x} y2={edge.to.y - 18} />
+                <text x={(edge.from.x + edge.to.x) / 2} y={(edge.from.y + edge.to.y) / 2 - 4}>{edge.label}</text>
+              </g>
+            ))}
+            {nodes.map((node, index) => (
+              <g key={index} className={requestedSymbol !== null && node.symbols.includes(requestedSymbol) ? "matched" : ""}>
+                <rect x={node.x - 48} y={node.y - 24} width="96" height="48" rx="8" className={node.leaf ? "leaf" : ""} />
+                <text x={node.x} y={node.y - 4}>{treeMode === "Mode Detail" ? node.detailLabel : node.label}</text>
+                <text x={node.x} y={node.y + 13}>{treeMode === "Mode Detail" ? `f=${number(node.frequency)}` : symbolListLabel(node.symbols)}</text>
+              </g>
+            ))}
+          </g>
+        </svg>
+      </div>
     </div>
   );
 }

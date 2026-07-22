@@ -45,7 +45,11 @@ test("UI responsive tidak memakai grid hasil yang terlalu padat", () => {
 });
 
 test("Pohon Huffman besar dan mempunyai kontrol navigasi", () => {
-  assert.match(css, /tree-wrap[\s\S]*min-height:\s*600px/);
+  assert.match(css, /huffman-tree-viewport[\s\S]*height:\s*650px/);
+  assert.match(page, /className="huffman-tree-toolbar"/);
+  assert.match(page, /className="huffman-tree-help"/);
+  assert.match(page, /className="huffman-tree-viewport"/);
+  assert.match(page, /className="huffman-tree-content"/);
   for (const label of ["Zoom In", "Zoom Out", "Geser Kiri", "Geser Kanan", "Geser Atas", "Geser Bawah", "Fit to Screen", "Center Root", "Expand Fullscreen", "Reset", "Export SVG", "Export PNG"]) {
     assert.match(page, new RegExp(label));
   }
@@ -71,13 +75,42 @@ test("Dataset recap dan multi-level testing tersedia", () => {
   assert.match(page, /Minimum rekomendasi 5 citra per format/);
 });
 
-test("Wide table memiliki compact view dan kolom sticky penting", () => {
+test("Wide table memiliki compact view tanpa kolom frozen", () => {
   assert.match(page, /analysisTableView/);
   assert.match(page, /\["Ringkas", "Detail"\]/);
   assert.match(page, /multi-level-table-wrapper/);
   assert.match(page, /MULTI_LEVEL_TABS/);
   assert.match(css, /multi-level-table th/);
-  assert.match(css, /position:\s*sticky/);
+  assert.match(css, /table-wrap[\s\S]*width:\s*100%[\s\S]*overflow-x:\s*auto/);
+  assert.match(css, /table\s*\{[\s\S]*width:\s*max-content[\s\S]*min-width:\s*100%/);
+  assert.doesNotMatch(css, /th:first-child[\s\S]*position:\s*sticky/);
+  assert.doesNotMatch(css, /td:first-child[\s\S]*position:\s*sticky/);
+  assert.doesNotMatch(css, /\.sticky-column|\.frozen-column|\.image-name-column/);
+});
+
+test("Tabel multi-level scroll horizontal bersama semua kolom dan header tetap sticky vertikal", () => {
+  const tableWrapperMatch = css.match(/\.multi-level-table-wrapper\s*\{[\s\S]*?\}/);
+  assert.ok(tableWrapperMatch, "wrapper tabel multi-level harus ditemukan");
+  assert.match(tableWrapperMatch[0], /width:\s*100%/);
+  assert.match(tableWrapperMatch[0], /overflow-x:\s*auto/);
+
+  const tableMatch = css.match(/\.multi-level-table\s*\{[\s\S]*?\}/);
+  assert.ok(tableMatch, "tabel multi-level harus ditemukan");
+  assert.match(tableMatch[0], /width:\s*max-content/);
+  assert.match(tableMatch[0], /min-width:\s*100%/);
+
+  const headerMatch = css.match(/\.multi-level-table th\s*\{[\s\S]*?\}/);
+  assert.ok(headerMatch, "header tabel multi-level harus ditemukan");
+  assert.match(headerMatch[0], /position:\s*sticky/);
+  assert.match(headerMatch[0], /top:\s*0/);
+  assert.doesNotMatch(headerMatch[0], /left:/);
+
+  const cellMatch = css.match(/\.multi-level-table th,\s*\.multi-level-table td\s*\{[\s\S]*?\}/);
+  assert.ok(cellMatch, "blok sel tabel multi-level harus ditemukan");
+  assert.doesNotMatch(cellMatch[0], /position:\s*sticky/);
+  assert.doesNotMatch(css, /\.multi-table th:nth-child\([\s\S]*?position:\s*sticky/);
+  assert.match(page, /const MULTI_LEVEL_TABS = \["Ukuran & Efisiensi", "Kualitas Citra", "Performa"\]/);
+  assert.match(page, /<MultiLevelTable rows=\{group\.rows\} columns=\{columns\} \/>/);
 });
 
 test("UI memisahkan kualitas rekonstruksi dan validasi round-trip", () => {
@@ -229,4 +262,46 @@ test("Tabel multi-level memuat kolom penelitian utama", () => {
   ]) {
     assert.match(page, new RegExp(column.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
+});
+
+test("Toolbar Huffman terpisah dari viewport dan transform hanya pada content", () => {
+  assert.match(page, /<div ref=\{panelRef\} className=\{`huffman-tree-panel/);
+  assert.match(page, /<div className="huffman-tree-toolbar" aria-label="Kontrol pohon Huffman">/);
+  assert.match(page, /<div className="huffman-tree-help">/);
+  assert.match(page, /<div className="huffman-tree-viewport" aria-label="Viewport pohon Huffman">/);
+  assert.match(page, /<g className="huffman-tree-content" transform=\{`translate\(\$\{pan\.x\} \$\{pan\.y\}\) scale\(\$\{zoom\}\)`\}>/);
+
+  const toolbarCss = css.match(/\.huffman-tree-toolbar\s*\{[\s\S]*?\}/)?.[0] ?? "";
+  assert.match(toolbarCss, /position:\s*sticky/);
+  assert.match(toolbarCss, /top:\s*0/);
+  assert.doesNotMatch(toolbarCss, /transform:/);
+  assert.doesNotMatch(toolbarCss, /left:/);
+
+  const viewportCss = css.match(/\.huffman-tree-viewport\s*\{[\s\S]*?\}/)?.[0] ?? "";
+  assert.match(viewportCss, /overflow:\s*hidden/);
+  assert.match(viewportCss, /position:\s*relative/);
+
+  const contentCss = css.match(/\.huffman-tree-content\s*\{[\s\S]*?\}/)?.[0] ?? "";
+  assert.match(contentCss, /transform-origin:\s*0 0/);
+});
+
+test("Kontrol Huffman tidak memulai pan dan fullscreen menjaga toolbar di atas", () => {
+  assert.match(page, /event\.stopPropagation\(\); setPan\(\(value\) => \(\{ \.\.\.value, x: value\.x \+ 60 \}\)\)/);
+  assert.match(page, /event\.stopPropagation\(\); setPan\(\(value\) => \(\{ \.\.\.value, x: value\.x - 60 \}\)\)/);
+  assert.match(page, /event\.stopPropagation\(\); setZoom/);
+  assert.match(page, /panel\.requestFullscreen\(\)/);
+  assert.match(page, /document\.exitFullscreen/);
+  assert.match(css, /\.huffman-tree-panel:fullscreen[\s\S]*display:\s*flex[\s\S]*flex-direction:\s*column/);
+  assert.match(css, /\.huffman-tree-panel:fullscreen \.huffman-tree-toolbar[\s\S]*flex:\s*0 0 auto/);
+  assert.match(css, /\.huffman-tree-panel:fullscreen \.huffman-tree-viewport[\s\S]*flex:\s*1 1 auto[\s\S]*height:\s*auto/);
+});
+
+test("Fit to Screen dan export pohon Huffman tetap memakai SVG yang sama", () => {
+  const fitMatch = page.match(/const fit = \(\) => \{[\s\S]*?\};/);
+  assert.ok(fitMatch, "fungsi fit harus ditemukan");
+  assert.match(fitMatch[0], /setZoom/);
+  assert.match(fitMatch[0], /setPan/);
+  assert.doesNotMatch(fitMatch[0], /toolbar|huffman-tree-toolbar|style\./);
+  assert.match(page, /const exportSvg = \(\) => \{[\s\S]*serializeToString\(svgRef\.current\)/);
+  assert.match(page, /const exportPng = \(\) => \{[\s\S]*canvas\.toDataURL\("image\/png"\)/);
 });
